@@ -1,0 +1,48 @@
+# Example: run Aperta in CI and gate the build on broken authorization.
+# Copy this into YOUR repo's .github/workflows/, provide a surface + session files (as secrets or
+# artifacts), and point --base at a disposable staging target. Aperta never logs in and only reads;
+# keep this pointed at an environment you are authorized to test, at a polite rate.
+name: aperta-authz-scan
+
+on:
+  workflow_dispatch:
+  # schedule: [{ cron: "0 6 * * 1" }]   # e.g. weekly
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF to code-scanning
+
+jobs:
+  authz:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get Aperta
+        run: |
+          git clone --depth 1 https://github.com/nyxragon/Aperta aperta
+          cd aperta && npm ci --omit=dev
+
+      # Provide these from your pipeline: the reconstructed surface and one session per identity.
+      # e.g. write $APERTA_SURFACE / $APERTA_ALICE / $APERTA_ADMIN from secrets, or restore artifacts.
+      - name: Run Aperta authz diff (SARIF) and gate
+        id: scan
+        run: |
+          node aperta/bin/aperta.mjs diff \
+            --base "${{ vars.APERTA_BASE }}" \
+            --surface surface.json \
+            --session alice.json --session admin.json \
+            --format sarif --fail-on any > aperta.sarif
+        # exit 3 = findings present (gate fails); 0 = clean; 2 = tool error.
+        continue-on-error: true
+
+      - name: Upload SARIF to code-scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: aperta.sarif
+          category: aperta
+
+      - name: Fail the build if Aperta found broken authorization
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "Aperta flagged broken authorization (see the code-scanning tab)." >&2
+          exit 1

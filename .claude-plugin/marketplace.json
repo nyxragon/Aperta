@@ -1,0 +1,14 @@
+{
+  "name": "nyxragon-aperta",
+  "description": "Aperta, SPA hidden-surface authorization mapper, by nyxragon",
+  "owner": { "name": "nyxragon", "url": "https://github.com/nyxragon" },
+  "plugins": [
+    {
+      "name": "aperta",
+      "source": "./",
+      "description": "Reconstruct an SPA's hidden authorization surface, diff identities, prove BOLA via the sibling-endpoint oracle.",
+      "category": "security",
+      "tags": ["authorization", "BOLA", "IDOR", "SPA", "access-control"]
+    }
+  ]
+}

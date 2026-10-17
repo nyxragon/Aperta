@@ -1,0 +1,12 @@
+node_modules/
+lab/node_modules/
+lab/dist/
+*.log
+tests/corpus.local.json
+tests/*.local.json
+labs/*/node_modules/
+labs/*/dist/
+labs/*/.angular/
+/tmp/aperta-wild/
+NOTES/
+demo/.tools/

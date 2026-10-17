@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aperta": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/aperta.mjs", "mcp"]
+    }
+  }
+}

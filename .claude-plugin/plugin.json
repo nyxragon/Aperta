@@ -1,0 +1,13 @@
+{
+  "name": "aperta",
+  "displayName": "Aperta",
+  "version": "0.1.0",
+  "description": "Reconstruct an SPA's hidden, role-gated attack surface from its stripped bundle, diff it against a low-priv session, and prove broken authorization with the app's own sibling endpoints as the oracle. Composes with the adversarial-validator.",
+  "author": { "name": "nyxragon" },
+  "homepage": "https://github.com/nyxragon/Aperta",
+  "repository": "https://github.com/nyxragon/Aperta",
+  "license": "MIT",
+  "keywords": ["security", "bug-bounty", "authorization", "BOLA", "IDOR", "BFLA", "access-control", "SPA", "appsec"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

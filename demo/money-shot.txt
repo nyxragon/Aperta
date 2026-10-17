@@ -1,0 +1,93 @@
+
+=== STAGE 1 - RECONSTRUCT (no session) ==============================
+The stripped bundle gives up its whole surface, including routes/APIs a low-priv
+user never sees. Note the hidden /api/admin/* endpoints - assembled from minified vars,
+so a regex JS-miner misses them; Aperta recovers them from the AST.
+
+$ aperta reconstruct lab/dist/assets --format endpoints
+GET /api/admin/users/{param}
+GET /api/admin/users
+POST /api/login
+GET /api/me/orders
+GET /api/orders/{param}
+
+=== STAGE 2 - DIFF (low-priv alice vs admin) ========================
+Reconstructed surface MINUS what alice can actually reach = the role-gated surface,
+isolated. This is the delta no traffic-only tool can see (you never clicked it).
+
+$ aperta diff --base http://localhost:5399 --js lab/dist/assets --session alice.json --session admin.json --format jsonl
+{"session":"alice","hidden":"GET /api/admin/users/{param}"}
+{"session":"alice","hidden":"GET /api/admin/users"}
+[alice/user] reachable:2 gated:3 hidden:2
+[admin/admin] reachable:4 gated:1 hidden:0
+findings: 0 BFLA/vertical-priv-esc, 2 BOLA candidate(s), 0 anon-reach
+
+=== STAGE 3 - PROVE (attacker alice vs victim bob, sibling oracle) ===
+GET /api/orders/{id} has no owner check. We confirm it NOT with a tuned response-diff
+but with a contradiction inside the app: the sibling GET /api/me/orders is the app's
+own statement of who owns what. alice pulls an order /api/me/orders attributes to bob,
+with own-id=200 and nonexistent=404 controls holding in the same run.
+
+$ aperta prove --base http://localhost:5399 --object /api/orders/{param} --sibling /api/me/orders --collection orders --attacker alice.json --victim bob.json
+{
+  "verdict": "CONFIRMED",
+  "class": "BOLA",
+  "confidence": "high",
+  "method": "GET",
+  "idKey": "id",
+  "endpoint": "/api/orders/{param}",
+  "oracle": "sibling-endpoint /api/me/orders (the app's own ownership statement)",
+  "attacker": "alice",
+  "victim": "bob",
+  "evidence": {
+    "attacker_owned": [
+      "1001",
+      "1002"
+    ],
+    "victim_owned": [
+      "2001",
+      "2002"
+    ],
+    "foreign_id_tested": "2001",
+    "reproductions": "3/3",
+    "attacker_get_foreign": {
+      "status": 200,
+      "body": {
+        "id": 2001,
+        "owner": "bob",
+        "item": "Monitor",
+        "total": 300
+      }
+    },
+    "control_own_id": "1001",
+    "control_own_result": {
+      "status": 200
+    },
+    "control_nonexistent_result": {
+      "status": 404
+    }
+  },
+  "reason": "alice retrieved orders 2001, which /api/me/orders attributes to bob and not to alice, a contradiction in the app's own authorization reproduced 3/3 times, with own-id=200 and nonexistent=404 controls holding."
+}
+
+=== STAGE 4 - ORACLES (auto-discover where the BOLA oracle applies) ===
+Aperta pairs each object endpoint with its self-scoped sibling list endpoint and
+reports applicability honestly. The id format does not matter: the victim's REAL ids
+are sourced from the victim's own list, so this is deterministic on uuids/slugs too.
+
+$ aperta oracles --js lab/dist/assets --format text
+medium  /api/admin/users/{param}  ->  /api/admin/users
+high    /api/orders/{param}  ->  /api/me/orders
+sibling-oracle applies to 2/2 object endpoint(s) (100%)
+
+=== ATTACK SURFACE MAP (the one-shot visual) ========================
+[alice/user] reachable:2 gated:3 hidden:2
+[admin/admin] reachable:4 gated:1 hidden:0
+sibling-oracle applies to 2/2 object endpoint(s) (100%)
+findings: 0 BFLA/vertical-priv-esc, 2 BOLA candidate(s), 0 anon-reach
+
+Self-contained HTML written: demo/attack-surface-map.html (10192 bytes)
+
+=== DONE ============================================================
+low-priv account -> reconstructed hidden /admin* -> proven invisible to that session ->
+landed a cross-user BOLA, proven by the app's own sibling. No LLM in the decision path.
