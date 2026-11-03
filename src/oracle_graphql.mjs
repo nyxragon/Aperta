@@ -6,7 +6,7 @@
 // exactly as in REST (src/oracle.mjs): the victim's REAL global ids are read from the victim's own
 // list query, the attacker requests one, and a contradiction with controls (own=present,
 // nonexistent=absent) holding in the same run confirms the break. No id guessing, no response-diff,
-// no LLM. Deterministic on opaque GraphQL global ids, which is exactly where REST-id tools give up.
+// no probabilistic guess in the decision. Deterministic on opaque GraphQL global ids, which is exactly where REST-id tools give up.
 //
 // As in the REST oracle, confirmation is gated on a real cross-user DATA contradiction (the attacker
 // receives the SAME non-trivial node the victim legitimately sees), never on id-equality alone, so an

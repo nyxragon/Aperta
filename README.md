@@ -20,8 +20,8 @@ session is never shown, and then does the one thing a proxy-replay plugin cannot
 to the victim but still hands that object to the attacker, the app has contradicted itself, and that
 contradiction *is* the finding.
 
-No tuned response-diff, no LLM guess, the same verdict on every run, reproduced three times with
-controls. The ids come from the victim's own list, so it confirms **BOLA / IDOR** on real UUIDs,
+The decision is deterministic, not a tuned response-diff or a probabilistic guess: the same verdict
+on every run, reproduced three times with controls. The ids come from the victim's own list, so it confirms **BOLA / IDOR** on real UUIDs,
 slugs, and GraphQL node ids, not just guessable integers, and the proof reads only request/response
 behaviour, so it works on frameworks it has never seen. Autorize-style tools test the endpoints you
 *clicked* and confirm with a fuzzy diff; Aperta tests the surface you never reached and proves
@@ -40,7 +40,7 @@ confirmation is a guess. Aperta closes both gaps where today's tools leave them 
 
 - **Proxy/traffic tools** (Autorize, Burp) only test endpoints you actually clicked, and confirm with response-similarity/length heuristics.
 - **JS miners / crawlers** grab strings but can't rebuild routes assembled from minified variables.
-- **LLM scanners** reason about ownership probabilistically, so the same run can disagree with itself.
+- **AI / LLM scanners** confirm ownership probabilistically, so the same run can disagree with itself. Aperta embraces the agent to *propose* what to test, but keeps the *decision* deterministic.
 
 ## What it is: one path
 

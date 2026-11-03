@@ -100,7 +100,7 @@ try {
 
   bar("DONE");
   console.log("low-priv account -> reconstructed hidden /admin* -> proven invisible to that session ->");
-  console.log("landed a cross-user BOLA, proven by the app's own sibling. No LLM in the decision path.");
+  console.log("landed a cross-user BOLA, proven by the app's own sibling. The decision is deterministic: the agent proposes, the oracle decides.");
 } finally {
   lab.kill();
 }

@@ -6,7 +6,7 @@
 // proves that deterministically, and it needs NEITHER a per-object endpoint NOR any id guessing: the
 // attacker's OWN unfiltered-list response IS the evidence.
 //
-// The contradiction (all app-stated facts, no response-diff, no threshold, no LLM):
+// The contradiction (all app-stated facts, no response-diff, no threshold, no guesswork in the decision):
 //   - the app's self-scoped sibling (GET /api/me/orders) returns ONLY the caller's rows, which is the
 //     app's own statement of "what is mine" (and proves the app CAN scope this collection);
 //   - yet the attacker's bare GET /api/orders returns a row the app attributes to someone else -
