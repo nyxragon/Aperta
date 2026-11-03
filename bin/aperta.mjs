@@ -13,6 +13,7 @@ import { buildSession, sessionFromCurl } from "../src/session_import.mjs";
 import { harvest } from "../src/harvest.mjs";
 import { siblingOracleBOLA, verdictHash } from "../src/oracle.mjs";
 import { collectionOverReturnBOLA } from "../src/oracle_collection.mjs";
+import { ownerFieldOracleBOLA } from "../src/oracle_owner.mjs";
 import { graphqlOracleBOLA } from "../src/oracle_graphql.mjs";
 import { discoverOracles, applicabilityLine } from "../src/oracle_discovery.mjs";
 import { probeBypasses } from "../src/bypass.mjs";
@@ -254,6 +255,16 @@ async function cmdProve() {
     return emitProve(await mk(), mk);
   }
 
+  // --owner-field: single-identity BOLA proof from the object's own owner field (no victim session).
+  if (args.includes("--owner-field")) {
+    const objectTemplate = opt("--object");
+    if (!objectTemplate) throw new Error("--owner-field needs --object <tmpl>, --own-id <id you own>, --foreign-id <id,...>");
+    const ownId = opt("--own-id");
+    const foreignIds = (opt("--foreign-id") || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const mk = () => ownerFieldOracleBOLA(base, { objectTemplate, ownId, foreignIds, ownerKey: opt("--owner-key"), idKey, attacker });
+    return emitProve(await mk(), mk);
+  }
+
   // --graphql: the sibling oracle over GraphQL global-ids (node(id:)/typed-by-id queries).
   if (args.includes("--graphql")) {
     const endpoint = opt("--endpoint", "/graphql");
@@ -435,6 +446,7 @@ THE ONE PATH (everything else is a helper for one of these):
        auto:    --auto (--surface|--js ...)        discover + prove every candidate pair
        graphql: --graphql --object-query <q> --object-path <p> --sibling-query <q> --collection-path <p>
        list:    --collection-overreturn --collection-list "/api/orders" --sibling "/api/me/orders" --collection orders
+       1-id:    --owner-field --object "/api/orders/{param}" --own-id <mine> --foreign-id <other>   (no victim session)
 
 HELPERS:
   aperta harvest <page-url> [--out <dir>] [--session <f>]    fetch the JS the page declares (optional; katana/getJS = thorough)

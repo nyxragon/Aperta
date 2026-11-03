@@ -10,6 +10,7 @@ import { authzDiff, hiddenToJSONL } from "./authz_probe.mjs";
 import { siblingOracleBOLA } from "./oracle.mjs";
 import { graphqlOracleBOLA } from "./oracle_graphql.mjs";
 import { collectionOverReturnBOLA } from "./oracle_collection.mjs";
+import { ownerFieldOracleBOLA } from "./oracle_owner.mjs";
 import { discoverOracles, applicabilityLine } from "./oracle_discovery.mjs";
 import { classifyFindings } from "./authz_matrix.mjs";
 import { toHTMLReport } from "./report.mjs";
@@ -63,7 +64,9 @@ const TOOLS = [
       type: "object",
       properties: {
         base: { type: "string" },
-        mode: { type: "string", enum: ["sibling", "auto", "graphql", "overreturn"], default: "sibling" },
+        mode: { type: "string", enum: ["sibling", "auto", "graphql", "overreturn", "owner-field"], default: "sibling" },
+        ownId: { type: "string", description: "owner-field mode: an object id the attacker OWNS (calibrates the owner value)" },
+        foreignIds: { type: "array", items: { type: "string" }, description: "owner-field mode: other object ids to test (observed / neighbour)" },
         object: { type: "string", description: 'sibling mode: object endpoint template, e.g. "/api/orders/{param}"' },
         sibling: { type: "string", description: 'sibling/overreturn mode: owner-filtered list, e.g. "/api/me/orders"' },
         collection: { type: "string", description: "JSON key (or dot path via collectionPath) holding the array" },
@@ -185,6 +188,9 @@ async function callTool(name, a = {}) {
     }
     if (mode === "overreturn") {
       return pack(await collectionOverReturnBOLA(a.base, { collectionPath: a.collectionList, siblingPath: a.sibling, collection: a.collection, idKey, ownerKey: a.ownerKey, attacker, victim: victim || undefined }));
+    }
+    if (mode === "owner-field") {
+      return pack(await ownerFieldOracleBOLA(a.base, { objectTemplate: a.object, ownId: a.ownId, foreignIds: a.foreignIds || [], ownerKey: a.ownerKey, idKey, attacker }));
     }
     // default: the per-object sibling oracle
     if (!victim) return { error: "sibling mode needs a victim identity", reportable: false };
