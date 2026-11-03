@@ -9,7 +9,7 @@
 //
 // The LLM is NOT used here: everything below is deterministic AST. The LLM is a later
 // fallback only for gates this static pass cannot resolve.
-import { readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse } from "@babel/parser";
@@ -17,14 +17,22 @@ import _traverse from "@babel/traverse";
 import { parseNextBuildManifest, parseModuleFederation } from "./frameworks_modern.mjs";
 const traverse = _traverse.default || _traverse;
 
-function listJs(dir) {
-  const s0 = statSync(dir);
+// Identifiers that denote an HTTP client, so `X.get("/p")` is a request and not `cache.get`/`map.get`.
+const AX_RECEIVERS = /^(axios|ax|_ax|http|\$http|httpclient|api|apiclient|api_client|client|request|req|rest|svc|service|fetcher|instance|agent|xhr|ky|got)$/i;
+
+function listJs(dir, seen = new Set()) {
+  let s0; try { s0 = statSync(dir); } catch { return []; }
   if (s0.isFile()) return dir.endsWith(".js") ? [dir] : [];
+  // break symlink cycles (pnpm/node_modules/build dirs) via a visited-realpath set
+  let real; try { real = realpathSync(dir); } catch { real = dir; }
+  if (seen.has(real)) return [];
+  seen.add(real);
   const out = [];
-  for (const name of readdirSync(dir)) {
+  let names; try { names = readdirSync(dir); } catch { return out; }
+  for (const name of names) {
     const p = join(dir, name);
-    const s = statSync(p);
-    if (s.isDirectory()) out.push(...listJs(p));
+    let s; try { s = statSync(p); } catch { continue; } // broken/looping symlink: skip, don't crash
+    if (s.isDirectory()) out.push(...listJs(p, seen));
     else if (name.endsWith(".js")) out.push(p);
   }
   return out;
@@ -73,21 +81,40 @@ export function fingerprint(target) {
 // one distinct string across all its declarations/assignments). An ambiguous name is left
 // unresolved, so the template keeps a `{param}` hole instead of a confidently-wrong literal. A wrong
 // path is worse than an unresolved one: under live probing it would hit a fabricated URL.
+function collectParamNames(node, acc = []) {
+  if (!node) return acc;
+  if (node.type === "Identifier") acc.push(node.name);
+  else if (node.type === "AssignmentPattern") collectParamNames(node.left, acc);
+  else if (node.type === "RestElement") collectParamNames(node.argument, acc);
+  else if (node.type === "ObjectPattern") (node.properties || []).forEach((p) => collectParamNames(p.value || p.argument, acc));
+  else if (node.type === "ArrayPattern") (node.elements || []).forEach((e) => collectParamNames(e, acc));
+  return acc;
+}
+
 export function collectConsts(ast) {
-  const seen = new Map(); // name -> Set of distinct string values
+  const seen = new Map();      // name -> Set of distinct string-literal values
+  const tainted = new Set();   // names that must NOT be propagated (shadowed / dynamic)
   const add = (name, val) => { if (!seen.has(name)) seen.set(name, new Set()); seen.get(name).add(val); };
   traverse(ast, {
     VariableDeclarator(path) {
       const { id, init } = path.node;
-      if (id.type === "Identifier" && init && init.type === "StringLiteral") add(id.name, init.value);
+      if (id.type !== "Identifier") return;
+      if (init && init.type === "StringLiteral") add(id.name, init.value);
+      else if (init) tainted.add(id.name); // declared from a non-literal (runtime value)
     },
     AssignmentExpression(path) {
       const { left, right } = path.node;
-      if (left.type === "Identifier" && right.type === "StringLiteral") add(left.name, right.value);
+      if (left.type !== "Identifier") return;
+      if (right.type === "StringLiteral") add(left.name, right.value);
+      else tainted.add(left.name); // reassigned to a runtime value (e.g. window.__ENV__.apiBase)
     },
+    // a name used as a function/catch param is a DIFFERENT binding in that scope; we have no scope
+    // context, so never propagate a file-level literal for a name that is ever a parameter.
+    Function(path) { for (const p of path.node.params || []) collectParamNames(p).forEach((n) => tainted.add(n)); },
+    CatchClause(path) { if (path.node.param) collectParamNames(path.node.param).forEach((n) => tainted.add(n)); },
   });
   const consts = new Map();
-  for (const [name, vals] of seen) if (vals.size === 1) consts.set(name, [...vals][0]);
+  for (const [name, vals] of seen) if (vals.size === 1 && !tainted.has(name)) consts.set(name, [...vals][0]);
   return consts;
 }
 
@@ -153,6 +180,10 @@ function refName(node) {
 // Find a React guard prop (need:"...") inside a node's subtree, used on the route's `element`
 // value, where the guard wraps the component: element: Guard({ need:"admin", children:... }).
 function needInSubtree(node) {
+  // The guard's own need:"..." sits on the element's OWN props. Do NOT descend into render-children
+  // (children/component/render/...): a nested widget's need: is that widget's guard, not the route's,
+  // and attributing it to the route paints a public route as gated (under-testing real exposure).
+  const SKIP = new Set(["children", "element", "component", "render", "content", "body", "fallback", "errorElement"]);
   const stack = [node];
   while (stack.length) {
     const n = stack.pop();
@@ -161,6 +192,7 @@ function needInSubtree(node) {
         n.value && n.value.type === "StringLiteral") {
       return n.value.value;
     }
+    if (n.type === "ObjectProperty" && SKIP.has(n.key && (n.key.name || n.key.value))) continue; // prune render-children
     for (const k of Object.keys(n)) {
       const v = n[k];
       if (Array.isArray(v)) v.forEach((c) => c && typeof c.type === "string" && stack.push(c));
@@ -299,9 +331,17 @@ export function reconstruct(distDir) {
     }
     let ast;
     try {
-      ast = parse(code, { sourceType: "unambiguous", plugins: ["jsx"], errorRecovery: true });
+      // richer plugin set first (TS / decorators / import attributes are common in real bundles)
+      ast = parse(code, { sourceType: "unambiguous", plugins: ["jsx", "typescript", "decorators-legacy", "importAttributes"], errorRecovery: true });
     } catch {
-      continue;
+      try {
+        ast = parse(code, { sourceType: "unambiguous", plugins: ["jsx"], errorRecovery: true });
+      } catch (err) {
+        // NEVER drop a file silently: a silent empty result reads as "clean app" (the hardened-is-a-
+        // bug failure). Warn to stderr so an empty surface is explained, not mistaken for no surface.
+        process.stderr.write(`aperta: could not parse ${file.split("/").pop()} (${(err && err.message || "parse error").split("\n")[0]}); its surface is NOT reconstructed\n`);
+        continue;
+      }
     }
     const consts = collectConsts(ast);
     // GraphQL: gql`...` tagged templates + any string/template literal holding a named operation.
@@ -337,11 +377,25 @@ export function reconstruct(distDir) {
           const rp = normRoute(path.node.arguments[0].value);
           if (rp && !routes.has(rp)) routes.set(rp, { path: rp, role: null });
         }
-        const isFetch = c.type === "Identifier" && c.name === "fetch";
-        const isAxios = c.type === "MemberExpression" && ["get","post","put","delete","patch"].includes(c.property.name);
-        // AngularJS: $resource("/api/x/:id"), $http({url,method}), $http.get(...)
+        // `fetch(...)`, and also `window.fetch`/`self.fetch`/`globalThis.fetch`.
+        const isFetch = (c.type === "Identifier" && c.name === "fetch") ||
+          (c.type === "MemberExpression" && c.property && c.property.name === "fetch" &&
+           c.object && c.object.type === "Identifier" && ["window", "self", "globalThis"].includes(c.object.name));
+        // An HTTP client's .get/.post/... but NOT any object's .get (cache.get, map.get, store.get are
+        // NOT endpoints). Require the receiver to look like an HTTP client, OR the first arg to be an
+        // absolute URL (then it is almost certainly a request regardless of the receiver name).
+        const recv = c.type === "MemberExpression"
+          ? (c.object.type === "Identifier" ? c.object.name
+            : (c.object.type === "MemberExpression" && c.object.property ? c.object.property.name : null))
+          : null;
+        const looksHttpClient = recv && AX_RECEIVERS.test(recv);
+        const arg0 = path.node.arguments[0];
+        const arg0Abs = arg0 && arg0.type === "StringLiteral" && /^https?:\/\//.test(arg0.value);
+        const isAxios = c.type === "MemberExpression" && ["get","post","put","delete","patch"].includes(c.property.name) &&
+          (looksHttpClient || arg0Abs);
+        // AngularJS: $resource("/api/x/:id"), $http({url,method}), $http.get(...), axios({url,method})
         const isResource = c.type === "Identifier" && /resource$/i.test(c.name);
-        const isHttpCfg = c.type === "Identifier" && /^(.*\$)?http$/i.test(c.name) &&
+        const isHttpCfg = c.type === "Identifier" && (/^(.*\$)?http$/i.test(c.name) || AX_RECEIVERS.test(c.name)) &&
           path.node.arguments[0] && path.node.arguments[0].type === "ObjectExpression";
         if (isResource) {
           const u = resolvePath(path.node.arguments[0], consts);
@@ -373,19 +427,9 @@ export function reconstruct(distDir) {
         if (!endpoints.has(key)) endpoints.set(key, { method, path: url, file: file.split("/").pop(), ...originTag(url, isAbsolute) });
       },
       ObjectExpression(path) {
-        // Next.js _buildManifest: { sortedPages: ["/","/admin",...], "/path":[chunks] }
-        const sp = path.node.properties.find(
-          (p) => p.type === "ObjectProperty" && (p.key.name || p.key.value) === "sortedPages" &&
-                 p.value.type === "ArrayExpression"
-        );
-        if (sp) {
-          for (const el of sp.value.elements) {
-            if (el && el.type === "StringLiteral" && el.value.startsWith("/") && !el.value.startsWith("/_")) {
-              const rp = el.value;
-              if (!routes.has(rp)) routes.set(rp, { path: rp, role: null });
-            }
-          }
-        }
+        // (Next.js sortedPages is handled by parseNextBuildManifest on the raw code, which normalizes
+        // dynamic segments; the old AST branch here stored them verbatim and duplicated that, so it
+        // was removed.)
         // route config (react-router { path, element } OR angular { path, component, canActivate })
         const pathProp = path.node.properties.find(
           (p) => p.type === "ObjectProperty" &&
@@ -427,8 +471,14 @@ function selfTest() {
     writeFileSync(join(dir, "app.js"), `
       function a(id){ const cr="/api/v1"; return fetch(\`\${cr}/orders/\${id}\`); }
       function b(id){ const cr="/internal/secret"; return fetch(\`\${cr}/users/\${id}\`); }
-      function c(id){ const base="/api"; return fetch(\`\${base}/health\`); }
+      function c(id){ const root="/api"; return fetch(\`\${root}/health\`); } // 'root' is unambiguous, not a param
       function d(id){ return fetch(\`https://api.example.com/v2/payments/\${id}\`); }
+      function e(base, id){ return fetch(\`\${base}/orders/\${id}\`); }        // base is a PARAM, not the file const
+      function f(id){ let ab="/api"; ab=window.__ENV__.apiBase; return fetch(\`\${ab}/pay/\${id}\`); } // reassigned
+      function g(id){ return cache.get("/users/profile/settings"); }         // NOT an HTTP client
+      function h(id){ return api.get("/api/real/thing"); }                   // IS an http client
+      function i(id){ return window.fetch("/api/via/window"); }
+      function j(id){ return axios({ url:"/api/direct/axios", method:"PUT" }); }
     `);
     const m = reconstruct(dir);
     const paths = m.endpoints.map((e) => e.path);
@@ -438,6 +488,11 @@ function selfTest() {
     check(paths.includes("/api/health"), "an UNAMBIGUOUS const still propagates (/api/health resolved)");
     const abs = m.endpoints.find((e) => e.path === "https://api.example.com/v2/payments/{param}");
     check(abs && abs.crossOrigin === true && abs.origin === "https://api.example.com", "absolute cross-origin API endpoint is kept and tagged with its origin");
+    check(!paths.some((p) => p.includes("/pay") && p.startsWith("/api")), "a reassigned (runtime) const is not fabricated as a literal base");
+    check(!paths.some((p) => p === "/users/profile/settings"), "a non-HTTP .get (cache.get) is NOT fabricated as an endpoint");
+    check(paths.includes("/api/real/thing"), "an HTTP-client .get (api.get) IS reconstructed");
+    check(paths.includes("/api/via/window"), "window.fetch is reconstructed");
+    check(m.endpoints.some((e) => e.path === "/api/direct/axios" && e.method === "PUT"), "axios({url,method}) config call is reconstructed");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
