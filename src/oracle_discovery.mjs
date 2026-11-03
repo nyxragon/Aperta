@@ -37,9 +37,11 @@ function listEndpoint(e, collection) {
   if (e.path.includes("{param}")) return null;
   const s = segs(e.path);
   if (!s.includes(collection)) return null;
-  // self-scoped if a scope token appears anywhere before the collection
+  // self-scoped if a scope token appears before the collection (/me/orders) OR as a trailing segment
+  // after it (/orders/me, /orders/mine, /orders/current) - both are the caller's own list.
   const ci = s.indexOf(collection);
-  const scoped = s.slice(0, ci).some((seg) => SELF_SCOPES.includes(seg.toLowerCase()));
+  const scoped = s.slice(0, ci).some((seg) => SELF_SCOPES.includes(seg.toLowerCase())) ||
+    s.slice(ci + 1).some((seg) => SELF_SCOPES.includes(seg.toLowerCase()));
   return { path: e.path, scoped };
 }
 
@@ -127,6 +129,15 @@ function selfTest() {
   check(d.applicability.rate === 0.5, "applicability rate 0.5");
   check(applicabilityLine(d).includes("2/4") && applicabilityLine(d).includes("50%"), "applicability line");
   check(!d.pairs.some((p) => p.objectTemplate === "/api/login"), "POST /api/login is not an object endpoint");
+
+  // trailing self-scope (/orders/me, /orders/mine) is a true ownership statement -> high confidence
+  const tm = discoverOracles({ endpoints: [
+    { method: "GET", path: "/api/orders/{param}" },
+    { method: "GET", path: "/api/orders/mine" },
+    { method: "GET", path: "/api/orders" },
+  ] });
+  const ord = tm.pairs.find((p) => p.collection === "orders");
+  check(ord && ord.best === "/api/orders/mine" && ord.confidence === "high", "trailing self-scope /orders/mine is high confidence, preferred over the bare list");
 
   console.log(`oracle_discovery self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -57,15 +57,28 @@ export async function probeBypasses(base, gatedEndpoints, session, rawOpts = {})
   const headers = session.headers || {};
   const findings = [];
   let skippedUnsafe = 0;
+
+  // Baseline: what a guaranteed-miss looks like on this host (a soft-404 / SPA app-shell commonly
+  // 200s every path). A variant whose response matches this shell is NOT a real reach, so a bypass
+  // is only reported when it looks DIFFERENT from a known miss.
+  const baseline = [];
+  for (const p of ["/aperta-bypass-control-0a1b2c", "/nope/" + Math.random().toString(36).slice(2) + "/x"]) {
+    const r = await probe(base, "GET", p, headers, true);
+    baseline.push({ status: r.status, len: (r.body || "").length });
+  }
+  const looksLikeShell = (r) => baseline.some((b) => b.status === r.status && Math.abs((r.body || "").length - b.len) <= 48);
+
   for (const ep of gatedEndpoints) {
     for (const v of bypassTransforms(ep.method, ep.path)) {
       // SAFETY: a verb-swap / method-override to a state-changing verb would send a live mutating
       // request. Skip those unless --unsafe (lab / authorized). Read-only transforms still run.
       if (STATE_CHANGING.has(v.method) && !opts.unsafe) { skippedUnsafe++; continue; }
       const cp = concrete(v.path);
-      const r = await probe(base, v.method, cp, { ...headers, ...v.headers }, false);
-      // a bypass is a real SUCCESS (2xx), not merely "not 401/403": a 404/405/500 is not getting in.
-      const reached = r.status >= 200 && r.status < 300 && !isGated(r.status, { location: r.location }, opts);
+      const r = await probe(base, v.method, cp, { ...headers, ...v.headers }, true);
+      // a bypass is a real SUCCESS (2xx), not merely "not 401/403"; apply content/deny markers (body
+      // now fetched) and reject anything that is just the app-shell/soft-404 baseline.
+      const reached = r.status >= 200 && r.status < 300 &&
+        !isGated(r.status, { location: r.location, body: r.body }, opts) && !looksLikeShell(r);
       if (reached) {
         findings.push({ original: `${ep.method} ${ep.path}`, technique: v.technique, variant: `${v.method} ${cp}`, status: r.status });
       }
