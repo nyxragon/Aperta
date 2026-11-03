@@ -134,19 +134,31 @@ export function toSARIF({ diff = null, session = null, bolas = [], findings = nu
 // 200 that returns an object body. Re-run fleet-wide to catch the same pattern on other hosts.
 export function toNucleiTemplate(bola, { exampleId } = {}) {
   if (bola.verdict !== "CONFIRMED") throw new Error("nuclei template is only emitted for a CONFIRMED finding");
-  const collection = (bola.evidence && bola.endpoint.match(/\/([a-z0-9_-]+)\/\{param\}/i)?.[1]) || "object";
-  const idval = exampleId || (bola.evidence && bola.evidence.foreign_id_tested) || "1";
-  const path = bola.endpoint.replace(/\{param\}/g, String(idval));
-  const idKeyWord = `"${bola.idKey || "id"}"`;
+  // Every interpolated value below originates from the live target (untrusted) and this template is
+  // re-run fleet-wide by the detector flywheel, so an unescaped value would be a template-injection
+  // that fires attacker-influenced requests at every host. Harden: slugify the id-derived name,
+  // single-line + length-cap the example id, and emit every value as a JSON-quoted scalar (valid YAML)
+  // so quotes/colons/newlines cannot break out of their field.
+  const q = (v) => JSON.stringify(String(v));                                   // valid double-quoted YAML scalar
+  const slug = (v) => String(v).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "object";
+  const oneLine = (v) => String(v).replace(/[\r\n\t]+/g, " ").slice(0, 256);    // no newlines, bounded
+  // An id goes into a URL path: restrict it to safe id chars so it cannot add path segments ("/"),
+  // nuclei interpolation ("{{"), quotes, or whitespace. It is only an EXAMPLE value anyway.
+  const idSafe = (v) => (String(v).split(/[\r\n]/)[0].replace(/[^A-Za-z0-9._~:%=+-]/g, "").slice(0, 128) || "1");
+  const collection = slug((bola.evidence && bola.endpoint.match(/\/([a-z0-9_-]+)\/\{param\}/i)?.[1]) || "object");
+  const idval = idSafe(exampleId || (bola.evidence && bola.evidence.foreign_id_tested) || "1");
+  const endpoint = oneLine(bola.endpoint);
+  const path = endpoint.replace(/\{param\}/g, idval);
+  const idKeyWord = `"${oneLine(bola.idKey || "id")}"`;
   const yaml = [
     `id: aperta-bola-${collection}`,
     ``,
     `info:`,
-    `  name: Broken Object Level Authorization in ${bola.endpoint}`,
+    `  name: ${q("Broken Object Level Authorization in " + endpoint)}`,
     `  author: nyxragon`,
     `  severity: high`,
     `  description: |`,
-    `    Confirmed by Aperta via the sibling-endpoint oracle (${bola.oracle}).`,
+    `    Confirmed by Aperta via the sibling-endpoint oracle.`,
     `    An attacker identity retrieved an object the app attributes to another user.`,
     `    Supply a LOW-PRIV session for the detector run: nuclei -H 'Cookie: <attacker-session>'.`,
     `    The object id below is an example from the confirming run; point it at a victim-owned id.`,
@@ -158,9 +170,9 @@ export function toNucleiTemplate(bola, { exampleId } = {}) {
     `    oracle: sibling-endpoint`,
     ``,
     `http:`,
-    `  - method: ${bola.method || "GET"}`,
+    `  - method: ${/^[A-Z]+$/.test(bola.method || "") ? bola.method : "GET"}`,
     `    path:`,
-    `      - "{{BaseURL}}${path}"`,
+    `      - ${q("{{BaseURL}}" + (path.startsWith("/") || /^https?:\/\//.test(path) ? path : "/" + path))}`,
     `    matchers-condition: and`,
     `    matchers:`,
     `      - type: status`,
@@ -169,7 +181,7 @@ export function toNucleiTemplate(bola, { exampleId } = {}) {
     `      - type: word`,
     `        part: body`,
     `        words:`,
-    `          - '${idKeyWord}'`,
+    `          - ${q(idKeyWord)}`,
     ``,
   ].join("\n");
   return yaml;
@@ -210,14 +222,24 @@ function selfTest() {
 
   const tpl = toNucleiTemplate(bola);
   check(/^id: aperta-bola-orders$/m.test(tpl), "nuclei id derived from collection");
-  check(tpl.includes('"{{BaseURL}}/api/orders/2001"'.replace('"', '')) || tpl.includes("{{BaseURL}}/api/orders/2001"), "nuclei path uses BaseURL + example id");
+  check(tpl.includes("{{BaseURL}}/api/orders/2001"), "nuclei path uses BaseURL + example id");
   check(tpl.includes("severity: high"), "nuclei severity high");
   check(tpl.includes("author: nyxragon"), "nuclei author");
-  check(tpl.includes("- '\"id\"'"), "nuclei body matcher uses idKey");
+  check(/words:\s*\n\s*- "\\"id\\""/.test(tpl), "nuclei body matcher uses idKey as a quoted scalar");
   check(tpl.includes("tags: bola,idor,access-control,authorization,aperta"), "nuclei tags");
   let threw = false;
   try { toNucleiTemplate({ verdict: "NOT-CONFIRMED" }); } catch { threw = true; }
   check(threw, "nuclei refuses a non-confirmed finding");
+
+  // INJECTION: untrusted id/endpoint/idKey must not break out of their YAML field (flywheel re-runs this).
+  const inj = toNucleiTemplate({ verdict: "CONFIRMED", method: "GET", idKey: "id", endpoint: "/api/orders/{param}",
+    oracle: "s", reason: "r", evidence: { foreign_id_tested: '1\n    - "{{BaseURL}}/api/admin/delete_all"\n    headers:\n      X-Injected: pwned' } });
+  check((inj.match(/\{\{BaseURL\}\}/g) || []).length === 1, "injected newline in id does NOT add a second request path");
+  check(!inj.includes("/api/admin/delete_all") && !inj.includes("X-Injected"), "injected path/header are neutralized");
+  const inj2 = toNucleiTemplate({ verdict: "CONFIRMED", method: "GET\nmalicious", idKey: 'id" evil', endpoint: '/api/x"y: z/{param}',
+    oracle: "s", reason: "r", evidence: { foreign_id_tested: "1" } });
+  check(/^  name: ".*"$/m.test(inj2), "endpoint goes into name as a quoted scalar (colon/quote safe)");
+  check(/^  - method: GET$/m.test(inj2), "a non-A-Z method is rejected, falls back to GET");
 
   console.log(`emit self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

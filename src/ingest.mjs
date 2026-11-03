@@ -7,17 +7,28 @@
 // Aperta still owns no recon: these parse artifacts you supply; fetching chunks stays your stage.
 import { normalizePath, trafficEntries } from "./authz_probe.mjs";
 
-// API endpoints observed in a HAR / proxy export, as [{method, path}] (normalized, deduped).
-export function endpointsFromHar(har) {
+// Static assets that are never an authz-relevant endpoint (dropped so the surface is not flooded).
+const STATIC_ASSET = /\.(?:js|mjs|cjs|css|png|jpe?g|gif|svg|webp|avif|ico|bmp|woff2?|ttf|otf|eot|map|mp4|webm|wasm)(?:$|\?)/i;
+
+// Endpoints observed in a HAR / proxy export, as [{method, path, origin}] (normalized, deduped).
+// Keeps EVERY non-static same-origin path (admin/internal/root-mounted REST included - that hidden
+// surface is the point), not only /api-marked ones. Each endpoint retains its ORIGIN so the diff can
+// scope it: a cross-origin (third-party / neighbor) call is tagged and later skipped, never attributed
+// to the target or probed against --base. Pass {apiOnly:true} to restore the old API-marker filter.
+export function endpointsFromHar(har, opts = {}) {
   const seen = new Set();
   const out = [];
   for (const e of trafficEntries(har)) {
-    let path;
-    try { path = new URL(e.url).pathname; } catch { path = (e.url || "").split("?")[0]; }
-    if (!/\/(api|graphql|v\d+|rest|rpc)(\/|$)/i.test(path)) continue; // API-like only
-    const np = normalizePath(path);
-    const key = `${e.method} ${np}`;
-    if (!seen.has(key)) { seen.add(key); out.push({ method: e.method, path: np, file: "har" }); }
+    let origin = null, pathname;
+    try { const u = new URL(e.url); origin = u.origin; pathname = u.pathname; }
+    catch { pathname = (e.url || "").split("?")[0]; }
+    if (STATIC_ASSET.test(pathname)) continue;
+    if (opts.apiOnly && !/\/(api|graphql|v\d+|rest|rpc)(\/|$)/i.test(pathname)) continue;
+    const np = normalizePath(pathname);
+    const ep = { method: e.method, path: np, file: "har" };
+    if (origin) ep.origin = origin;
+    const key = `${e.method} ${origin || ""} ${np}`;
+    if (!seen.has(key)) { seen.add(key); out.push(ep); }
   }
   return out;
 }

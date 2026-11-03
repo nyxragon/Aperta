@@ -1,11 +1,11 @@
 // Bypass-wave probing: for every endpoint gated from a low-priv identity, try a battery of known
 // authorization-bypass transforms and report any that flip the SAME identity from gated to reached.
-// This encodes the house rule "a defense is a bypass hypothesis, not a verdict" (CLAUDE.md §3) as a
+// This encodes the principle "a defense is a bypass hypothesis, not a verdict" as a
 // deterministic, reproducible pass. A hit is an authz-BYPASS candidate (a wall moved); whether it
 // reaches another user's data is then a job for the sibling oracle (prove) - impact, not reachability.
 import { probe, isGated, buildGatingOpts } from "./authz_probe.mjs";
 
-// State-changing verbs are never fired live unless the caller opts into unsafe (CLAUDE.md hard limit).
+// State-changing verbs are never fired live unless the caller opts into unsafe (no-state-change rule).
 const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 // Pure: the bypass variants for one (method, path). Each is {technique, method, path, headers}.

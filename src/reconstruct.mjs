@@ -345,7 +345,7 @@ export function reconstruct(distDir) {
           path.node.arguments[0] && path.node.arguments[0].type === "ObjectExpression";
         if (isResource) {
           const u = resolvePath(path.node.arguments[0], consts);
-          if (u && u.includes("/")) { const k = "GET " + u.replace(/:([A-Za-z_]+)/g, "{param}"); if (!endpoints.has(k)) endpoints.set(k, { method: "GET", path: u.replace(/:([A-Za-z_]+)/g, "{param}"), file: file.split("/").pop() }); }
+          if (u && u.includes("/")) { const rp = u.replace(/:([A-Za-z_]+)/g, "{param}"); const k = "GET " + rp; if (!endpoints.has(k)) endpoints.set(k, { method: "GET", path: rp, file: file.split("/").pop(), ...originTag(rp, /^https?:\/\//.test(rp)) }); }
           return;
         }
         if (isHttpCfg) {
@@ -356,7 +356,7 @@ export function reconstruct(distDir) {
             if (k === "url") u = resolvePath(p.value, consts);
             if (k === "method" && p.value.type === "StringLiteral") m = p.value.value.toUpperCase();
           }
-          if (u && u.includes("/")) { const key = m + " " + u; if (!endpoints.has(key)) endpoints.set(key, { method: m, path: u, file: file.split("/").pop() }); }
+          if (u && u.includes("/")) { const key = m + " " + u; if (!endpoints.has(key)) endpoints.set(key, { method: m, path: u, file: file.split("/").pop(), ...originTag(u, /^https?:\/\//.test(u)) }); }
           return;
         }
         if (!isFetch && !isAxios) return;

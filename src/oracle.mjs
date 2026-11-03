@@ -185,7 +185,7 @@ export async function siblingOracleBOLA(base, cfg) {
   // The record the VICTIM legitimately sees for this id: the ground truth the attacker must match.
   const victimForeign = await getObject(base, vH, cfg.objectTemplate, foreignId);
 
-  // Reproduce the attacker's read N times (default 3, CLAUDE.md §6): a one-off could be a fluke/race.
+  // Reproduce the attacker's read N times (default 3): a one-off could be a fluke/race.
   const repeat = Math.max(1, cfg.repeat || 3);
   let reads = 0, attackerGetsForeign = null;
   for (let i = 0; i < repeat; i++) {

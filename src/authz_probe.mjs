@@ -19,7 +19,7 @@ const GATED = new Set([401, 403]);
 
 // State-changing verbs. By default Aperta NEVER fires these at a live target: the diff only needs
 // to know whether an identity is authorized to reach the endpoint, and a real POST/PUT/PATCH/DELETE
-// can create/modify/delete data (CLAUDE.md hard limit: no exploitation that changes state). For a
+// can create/modify/delete data, which an authorization probe must never do. For a
 // state-changing endpoint we substitute a non-mutating OPTIONS probe unless the caller opts in with
 // `unsafe:true` (CLI --unsafe), which they should do only on a lab / with explicit authorization.
 const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -231,13 +231,18 @@ export async function authzDiff(baseURL, endpoints, sessions, defaultApiBase = "
   const rows = [];
   for (const e of endpoints) {
     const row = { method: e.method, path: e.path, status: {}, meta: {}, source: {} };
-    // SCOPE SAFETY: a bundle may reference a cross-origin API host. Do not auto-probe a host other
-    // than --base (it may be out of engagement scope). Surface it, do not touch it; the operator can
-    // re-run with --base set to that origin to test it explicitly.
-    if (e.crossOrigin && e.origin && baseOrigin && e.origin !== baseOrigin) {
+    // SCOPE SAFETY: a bundle/HAR may reference a cross-origin host. Do not auto-probe any host other
+    // than --base (it may be out of engagement scope). This is computed from the endpoint itself
+    // (an absolute path, or an `origin` tag from ingest), NOT from a trusted upstream flag, so an
+    // UNTAGGED absolute URL cannot slip through. Fail closed: if --base has no parseable origin, any
+    // endpoint carrying its own origin is treated as cross-origin and skipped.
+    let epOrigin = null;
+    if (/^https?:\/\//.test(e.path)) { try { epOrigin = new URL(e.path.replace(/\{param\}/g, "1")).origin; } catch { epOrigin = "about:invalid"; } }
+    else if (e.origin) epOrigin = e.origin;
+    if (epOrigin && epOrigin !== baseOrigin) {
       for (const s of sessions) {
         row.status[s.name] = 0;
-        row.meta[s.name] = { crossOrigin: e.origin, note: "cross-origin, not probed (set --base to this origin to test)" };
+        row.meta[s.name] = { crossOrigin: epOrigin, note: "cross-origin, not probed (set --base to this origin to test)" };
         row.source[s.name] = "cross-origin-skipped";
       }
       rows.push(row);

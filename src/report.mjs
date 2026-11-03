@@ -7,7 +7,7 @@
 //   - each CONFIRMED BOLA as a chain: attacker -> object(foreign id)=200 -> sibling says victim ->
 //     controls (own=200, missing=404) -> CONFIRMED.
 // Zero external dependencies (inline CSS, no CDN, works air-gapped). Every target-derived string is
-// HTML-escaped: endpoint paths come from the target bundle and are untrusted (CLAUDE.md §5).
+// HTML-escaped: endpoint paths come from the target bundle and are untrusted input.
 
 function esc(s) {
   return String(s ?? "")
