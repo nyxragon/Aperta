@@ -82,6 +82,56 @@ export function cookieFromHar(har) {
   return "";
 }
 
+// Request headers that are browser noise, not auth/identity: dropped from a copy-as-cURL import so
+// the session carries only what identifies the caller.
+const CURL_NOISE_HEADER = /^(accept|accept-encoding|accept-language|user-agent|sec-[a-z-]+|connection|referer|origin|cache-control|pragma|upgrade-insecure-requests|dnt|te|host|content-length|priority|if-none-match|if-modified-since)$/i;
+
+// Tokenize a shell command honoring single/double quotes and backslash line-continuations. Good enough
+// for a browser "Copy as cURL" string; not a full shell.
+function shellTokens(s) {
+  const out = []; let cur = "", q = null, started = false;
+  const src = String(s).replace(/\\\r?\n/g, " ");
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === q) q = null; else cur += c; continue; }
+    if (c === "'" || c === '"') { q = c; started = true; continue; }
+    if (c === "\\" && i + 1 < src.length) { cur += src[++i]; started = true; continue; }
+    if (/\s/.test(c)) { if (started) { out.push(cur); cur = ""; started = false; } continue; }
+    cur += c; started = true;
+  }
+  if (started) out.push(cur);
+  return out;
+}
+
+// Build a session from a browser/devtools "Copy as cURL" command. The single highest-friction step in
+// using Aperta is producing the session JSON by hand; a hunter already has the cURL on their clipboard.
+// Keeps the URL's origin for apiBase hinting, the Cookie, and every auth/identity header; drops noise.
+export function sessionFromCurl(curlText, { name, role } = {}) {
+  if (!name) throw new Error("session needs a --name");
+  // flags that CONSUME the next token (so it is not mistaken for the URL)
+  const TAKES_ARG = new Set(["-X", "--request", "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+    "-A", "--user-agent", "-e", "--referer", "-u", "--user", "--connect-to", "--resolve", "-m", "--max-time",
+    "--retry", "-o", "--output", "-w", "--write-out", "-c", "--cookie-jar", "--proxy", "-x"]);
+  const toks = shellTokens(curlText);
+  const headers = {}; let url = null;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === "-H" || t === "--header") {
+      const h = toks[++i] || ""; const idx = h.indexOf(":");
+      if (idx > 0) { const n = h.slice(0, idx).trim(); const v = h.slice(idx + 1).trim(); if (n && !CURL_NOISE_HEADER.test(n)) headers[n] = v; }
+    } else if (t === "-b" || t === "--cookie") {
+      const v = toks[++i]; if (v && v.includes("=")) headers.Cookie = v; // a value, not a jar file
+    } else if (t === "--url") { url = toks[++i]; }
+    else if (/^https?:\/\//.test(t) && !url) { url = t; }
+    else if (TAKES_ARG.has(t)) { i++; } // skip the flag's argument
+  }
+  const session = { name };
+  if (role) session.role = role;
+  session.headers = headers;
+  try { if (url) { const u = new URL(url); if (/\/(api|graphql|v\d+|rest|rpc)(\/|$)/i.test(u.pathname)) session.apiBase = u.pathname.replace(/\/[^/]*$/, "") || "/"; } } catch {}
+  return session;
+}
+
 // Assemble a session object. `host` scopes the jar; a HAR, if supplied, is attached as `traffic`
 // so the diff can run runtime-authoritatively (and seeds the Cookie if no jar is given).
 export function buildSession({ name, role, jarText, har, apiBase, host, extraHeaders } = {}) {
@@ -149,6 +199,24 @@ function selfTest() {
   // cookie value injection is neutralized (a value with ';' cannot add a second cookie)
   const inj = cookieHeader([{ name: "SID", value: "abc; admin=true", domain: "x", path: "/" }]);
   check(!inj.includes(";"), "cookie value with ';' cannot inject a second cookie");
+
+  // sessionFromCurl: a browser "Copy as cURL" becomes a ready session (the lowest-friction path)
+  const curl = `curl 'https://app.example.com/api/me/orders' \\
+    -X GET \\
+    -H 'accept: application/json' \\
+    -H 'Authorization: Bearer TOK123' \\
+    -H 'X-CSRF-Token: csrf9' \\
+    -H 'user-agent: Mozilla/5.0' \\
+    -b 'session=abc; theme=dark' \\
+    --compressed`;
+  const sc = sessionFromCurl(curl, { name: "alice", role: "user" });
+  check(sc.name === "alice" && sc.role === "user", "curl session carries name/role");
+  check(sc.headers.Authorization === "Bearer TOK123" && sc.headers["X-CSRF-Token"] === "csrf9", "auth + CSRF headers kept from cURL");
+  check(sc.headers.Cookie === "session=abc; theme=dark", "cookie kept from -b");
+  check(!("accept" in sc.headers) && !("user-agent" in sc.headers), "browser-noise headers dropped");
+  check(sc.apiBase === "/api/me", "apiBase hinted from the request path");
+  const scX = sessionFromCurl(`curl -X POST --data '{"x":1}' -H 'Cookie: s=1' https://h/api/x`, { name: "b" });
+  check(scX.headers.Cookie === "s=1" && !("-X" in scX.headers), "flags with arguments are consumed, not mistaken for the URL/headers");
 
   console.log(`session_import self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

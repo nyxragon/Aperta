@@ -9,7 +9,7 @@ import { reconstruct, fingerprint } from "../src/reconstruct.mjs";
 import { endpointsFromHar, endpointsFromList, sourcesFromSourceMap, chunksFromManifest, mergeEndpoints } from "../src/ingest.mjs";
 import { verifyEndpoints, verifyLine } from "../src/verify.mjs";
 import { authzDiff, hiddenToJSONL } from "../src/authz_probe.mjs";
-import { buildSession } from "../src/session_import.mjs";
+import { buildSession, sessionFromCurl } from "../src/session_import.mjs";
 import { siblingOracleBOLA, verdictHash } from "../src/oracle.mjs";
 import { collectionOverReturnBOLA } from "../src/oracle_collection.mjs";
 import { graphqlOracleBOLA } from "../src/oracle_graphql.mjs";
@@ -137,11 +137,19 @@ function cmdSession() {
   const name = opt("--name");
   if (!name) throw new Error("--name <identity> required");
   const role = opt("--role");
+  // --curl / --curl-file: paste a browser "Copy as cURL" and get a ready session JSON (lowest-friction).
+  const curlInline = opt("--curl");
+  const curlFile = opt("--curl-file");
+  if (curlInline || curlFile) {
+    const text = curlFile ? readFileSync(curlFile === "-" ? 0 : curlFile, "utf8") : curlInline;
+    console.log(JSON.stringify(sessionFromCurl(text, { name, role }), null, 2));
+    return;
+  }
   const jar = opt("--cookie-jar");
   const harFile = opt("--from-har");
   const apiBase = opt("--api-base");
   const host = opt("--host");
-  if (!jar && !harFile) throw new Error("provide --cookie-jar <netscape jar> and/or --from-har <file>");
+  if (!jar && !harFile) throw new Error("provide --curl '<copy-as-cURL>' (or --curl-file -), and/or --cookie-jar <jar>, and/or --from-har <file>");
   const jarText = jar ? readFileSync(jar, "utf8") : null;
   const har = harFile ? JSON.parse(readFileSync(harFile, "utf8")) : null;
   console.log(JSON.stringify(buildSession({ name, role, jarText, har, apiBase, host }), null, 2));
