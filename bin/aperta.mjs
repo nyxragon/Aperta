@@ -10,6 +10,7 @@ import { endpointsFromHar, endpointsFromList, sourcesFromSourceMap, chunksFromMa
 import { verifyEndpoints, verifyLine } from "../src/verify.mjs";
 import { authzDiff, hiddenToJSONL } from "../src/authz_probe.mjs";
 import { buildSession, sessionFromCurl } from "../src/session_import.mjs";
+import { harvest } from "../src/harvest.mjs";
 import { siblingOracleBOLA, verdictHash } from "../src/oracle.mjs";
 import { collectionOverReturnBOLA } from "../src/oracle_collection.mjs";
 import { graphqlOracleBOLA } from "../src/oracle_graphql.mjs";
@@ -279,6 +280,22 @@ async function cmdProve() {
   return emitProve(await mk(), mk);
 }
 
+async function cmdHarvest() {
+  // optional convenience: fetch the JS a page declares so reconstruct has input. Not a crawler;
+  // katana/getJS/a headless harvester remain the thorough path for lazy/dynamic chunks.
+  const url = opt("--url") || args.find((a) => /^https?:\/\//.test(a));
+  if (!url) throw new Error("usage: aperta harvest <page-url> [--out <dir>] [--max 60] [--session <f.json>]");
+  const outDir = opt("--out", "./aperta-bundles");
+  const max = parseInt(opt("--max", "60"), 10) || 60;
+  const sessF = opt("--session");
+  const headers = sessF ? (JSON.parse(readFileSync(sessF, "utf8")).headers || {}) : {};
+  const res = await harvest(url, { outDir, max, headers });
+  console.error(`harvested ${res.fetched.length} JS file(s), ${res.bytes} bytes -> ${res.dir}`);
+  console.error(res.fetched.length ? `next: aperta reconstruct ${res.dir} --format json > surface.json` : "no JS found; the app likely loads chunks dynamically - use katana/getJS/a headless crawler, then reconstruct that dir");
+  console.log(res.dir);
+  process.exit(res.fetched.length ? 0 : 1);
+}
+
 function cmdIngest() {
   // seed the surface from artifacts you already hold (Aperta still fetches nothing itself).
   const manF = opt("--manifest");
@@ -420,6 +437,7 @@ THE ONE PATH (everything else is a helper for one of these):
        list:    --collection-overreturn --collection-list "/api/orders" --sibling "/api/me/orders" --collection orders
 
 HELPERS:
+  aperta harvest <page-url> [--out <dir>] [--session <f>]    fetch the JS the page declares (optional; katana/getJS = thorough)
   aperta fingerprint <jsDirOrFile>                           which framework (picks the MAP lens)
   aperta oracles (--surface|--js ...) [--format json|text]   where PROVE applies + applicability %
   aperta session --name <id> [--role r] (--cookie-jar <jar>|--from-har <f>) [--host <h>]   build a session
@@ -438,6 +456,7 @@ try {
   if (cmd === "reconstruct") cmdReconstruct();
   else if (cmd === "fingerprint") cmdFingerprint();
   else if (cmd === "session") cmdSession();
+  else if (cmd === "harvest") await cmdHarvest();
   else if (cmd === "diff") await cmdDiff();
   else if (cmd === "ingest") cmdIngest();
   else if (cmd === "verify") await cmdVerify();

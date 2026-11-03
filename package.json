@@ -7,7 +7,7 @@
     "aperta": "./bin/aperta.mjs"
   },
   "scripts": {
-    "test": "node src/reconstruct.mjs --self-test && node src/emit.mjs --self-test && node src/authz_probe.mjs --self-test && node src/session_import.mjs --self-test && node src/oracle.mjs --self-test && node src/oracle_collection.mjs --self-test && node src/oracle_discovery.mjs --self-test && node src/oracle_graphql.mjs --self-test && node src/bypass.mjs --self-test && node src/authz_matrix.mjs --self-test && node src/frameworks_modern.mjs --self-test && node src/ingest.mjs --self-test && node src/verify.mjs --self-test && node src/report.mjs --self-test && node src/mcp.mjs --self-test && node tests/frameworks.mjs",
+    "test": "node src/reconstruct.mjs --self-test && node src/emit.mjs --self-test && node src/authz_probe.mjs --self-test && node src/session_import.mjs --self-test && node src/oracle.mjs --self-test && node src/oracle_collection.mjs --self-test && node src/harvest.mjs --self-test && node src/oracle_discovery.mjs --self-test && node src/oracle_graphql.mjs --self-test && node src/bypass.mjs --self-test && node src/authz_matrix.mjs --self-test && node src/frameworks_modern.mjs --self-test && node src/ingest.mjs --self-test && node src/verify.mjs --self-test && node src/report.mjs --self-test && node src/mcp.mjs --self-test && node tests/frameworks.mjs",
     "test:e2e": "node e2e/uuid-bola.mjs && node e2e/graphql-bola.mjs && node e2e/bypass.mjs && node e2e/verify.mjs && node e2e/oracle-negatives.mjs && node e2e/collection-bola.mjs",
     "test:uuid": "node e2e/uuid-bola.mjs",
     "demo": "node demo/demo.mjs"
