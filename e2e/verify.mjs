@@ -29,8 +29,23 @@ try {
   check(by["/api/gated"] === "exists", "gated route still counts as existing");
   check(by["/api/headless"] === "exists", "HEAD->GET fallback finds a route the HEAD 404/405'd");
   check(by["/api/ghost"] === "missing", "dead route marked missing");
-  console.log(`verify e2e: ${pass} passed, ${fail} failed`);
 } finally {
   server.close();
+}
+
+// Catch-all host: every path 200s. Fabricated endpoints must NOT be reported as live.
+const catchAll = http.createServer((req, res) => { res.statusCode = 200; res.end('{"ok":true}'); });
+await new Promise((r) => catchAll.listen(0, r));
+const cb = `http://localhost:${catchAll.address().port}`;
+try {
+  const results = await verifyEndpoints(cb, [
+    { method: "GET", path: "/api/totally/made/up/{param}" },
+    { method: "GET", path: "/api/also/fake" },
+  ]);
+  check(results.catchAll === true, "catch-all host is detected");
+  check(results.every((r) => r.exists !== "exists"), "fabricated endpoints on a catch-all host are NOT reported as live");
+  console.log(`verify e2e: ${pass} passed, ${fail} failed`);
+} finally {
+  catchAll.close();
 }
 process.exit(fail ? 1 : 0);
