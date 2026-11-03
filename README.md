@@ -188,7 +188,8 @@ Or run the three steps yourself:
 
 ```sh
 # 1. MAP   rebuild the surface from JavaScript your recon already harvested (getJS/katana)
-aperta reconstruct ./bundles --format openapi > surface.json
+#          (--format json is the full model the next steps consume; openapi/endpoints are for export)
+aperta reconstruct ./bundles --format json > surface.json
 
 # 2. DIFF  isolate what a low-priv identity is gated from but a higher role reaches
 aperta diff --base https://app.example.com --surface surface.json \

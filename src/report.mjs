@@ -79,7 +79,7 @@ function bolaChain(b) {
   const repro = b.evidence?.reproductions;
   const steps = [
     { t: `attacker<br><b>${esc(b.attacker)}</b>`, k: "actor" },
-    { t: `${esc(b.method || "GET")} ${esc(String(b.endpoint).replace("{param}", esc(fid ?? "id")))}<br>-> object returned`, k: ok ? "good" : "muted" },
+    { t: `${esc(b.method || "GET")} ${esc(String(b.endpoint).replace("{param}", fid ?? "id"))}<br>-> object returned`, k: ok ? "good" : "muted" },
     { t: `sibling says<br>owner = <b>${esc(b.victim)}</b>`, k: ok ? "good" : "muted" },
     { t: `controls hold<br>own + nonexistent${repro ? `<br>reproduced ${esc(repro)}` : ""}`, k: ok ? "good" : "muted" },
     { t: ok ? "CONFIRMED<br>BOLA" : "not<br>confirmed", k: ok ? "verdict" : "muted" },
@@ -113,9 +113,27 @@ function bolaChain(b) {
 
 function proveSection(proves) {
   if (!proves || !proves.length) return "";
-  return `<section><h2>Confirmed authorization breaks</h2>
+  // ONLY confirmed breaks go under the "Confirmed" heading. Everything else (attempted but not
+  // confirmed / inapplicable / earned-negative) goes in a separate, clearly non-affirmative list, so
+  // a reader can never mistake an unconfirmed row under a "Confirmed" header for a finding.
+  const confirmed = proves.filter((b) => b.verdict === "CONFIRMED");
+  const other = proves.filter((b) => b.verdict !== "CONFIRMED");
+  let html = "";
+  if (confirmed.length) {
+    html += `<section><h2>Confirmed authorization breaks</h2>
   <p class="sub">Each BOLA proven by the app's own sibling endpoint (its own statement of ownership), with controls holding in the same run. No tuned response-diff, no LLM in the decision path.</p>
-  ${proves.map(bolaChain).join("")}</section>`;
+  ${confirmed.map(bolaChain).join("")}</section>`;
+  }
+  if (other.length) {
+    const rows = other.map((b) =>
+      `<tr><td><code>${esc(b.method || "GET")} ${esc(b.endpoint)}</code></td>` +
+      `<td><span class="tag muted">${esc(b.verdict || "NOT CONFIRMED")}</span></td>` +
+      `<td class="muted-cell">${esc(b.reason || "")}</td></tr>`).join("");
+    html += `<section><h2>Attempted, not confirmed</h2>
+  <p class="sub">These candidate pairs were probed but did NOT meet the confirmation gates. They are leads, not findings, and nothing here reached another user's data.</p>
+  <div class="scroll"><table class="pairs"><thead><tr><th>endpoint</th><th>verdict</th><th>why not</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  }
+  return html;
 }
 
 function findingsSection(findings) {
@@ -188,6 +206,7 @@ td.c{font-weight:700;font-size:11px;letter-spacing:.03em}
 .pairs{font-size:13px}.pairs th,.pairs td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left}
 .conf.high{color:var(--good);font-weight:700}.conf.medium{color:var(--gate);font-weight:600}.conf.none{color:var(--unknown)}
 .none{color:var(--unknown)}
+.muted-cell{color:var(--sub);font-size:12px}
 .bar{position:relative;background:var(--unknown-bg);border-radius:8px;height:30px;margin:6px 0 16px;overflow:hidden}
 .bar .fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--accent),var(--good));opacity:.25}
 .bar span{position:relative;display:block;line-height:30px;padding:0 12px;font-size:12px;font-weight:600}
@@ -263,6 +282,13 @@ function selfTest() {
   check(html.includes("Hidden from <b>alice</b>"), "hidden surface for alice");
   check(html.includes("CONFIRMED<br>BOLA"), "confirmed BOLA chain rendered");
   check(html.includes("received that belongs to") && html.includes("Monitor"), "received cross-user data shown as evidence");
+  // a non-confirmed prove must NOT appear under the "Confirmed" heading, nor show affirmative steps
+  const inapp = { verdict: "INAPPLICABLE", method: "GET", endpoint: "/api/admin/users/{param}", attacker: "alice", victim: "bob", reason: "Oracle inapplicable: alice cannot read the admin sibling.", evidence: {} };
+  const mixed = toHTMLReport({ base: "x", model, diff, discovery, proves: [prove, inapp], findings });
+  check(mixed.includes("Attempted, not confirmed"), "non-confirmed results go in a separate section");
+  check(mixed.includes("Confirmed authorization breaks"), "the confirmed section still renders");
+  const confSection = mixed.split("Attempted, not confirmed")[0];
+  check(!confSection.includes("/api/admin/users/{param}"), "the INAPPLICABLE endpoint is NOT under the Confirmed heading");
   check(html.includes("1/1 object endpoints have a usable sibling oracle (100%)"), "applicability bar text");
   // XSS/untrusted-data escaping: a malicious endpoint path must be escaped
   const evil = { framework: "react", endpoints: [], routes: [], operations: [] };

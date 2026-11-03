@@ -42,7 +42,7 @@ getJS --url https://app.target.com | while read u; do curl -s "$u" -o "bundles/$
 ```sh
 aperta fingerprint bundles                       # which framework (picks your lens)
 aperta reconstruct bundles --format endpoints    # human-readable
-aperta reconstruct bundles --format openapi > surface.json   # machine, feeds the diff
+aperta reconstruct bundles --format json > surface.json      # full model, feeds diff/prove/report
 ```
 Look at what came back that you have NOT seen in the UI, `/admin*`, `/api/admin/*`, privileged
 GraphQL mutations. That is the lead. Then check where the BOLA oracle even applies, before spending

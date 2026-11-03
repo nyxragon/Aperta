@@ -184,6 +184,8 @@ async function callTool(name, a = {}) {
 
 // JSON-RPC dispatch (pure: request in -> response object out, or null for a notification).
 export async function dispatch(req) {
+  // A JSON-RPC notification has no `id` and must NEVER get a response (id:0 is a real request).
+  if (req == null || req.id === undefined || req.id === null) return null;
   const reply = (result) => ({ jsonrpc: "2.0", id: req.id, result });
   const errorReply = (code, message) => ({ jsonrpc: "2.0", id: req.id, error: { code, message } });
   try {

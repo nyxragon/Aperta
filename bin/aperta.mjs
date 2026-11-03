@@ -150,7 +150,28 @@ function cmdSession() {
 function loadModel() {
   const surface = opt("--surface");
   const js = opt("--js");
-  if (surface) return JSON.parse(surface === "-" ? readFileSync(0, "utf8") : readFileSync(surface, "utf8"));
+  if (surface) {
+    const m = JSON.parse(surface === "-" ? readFileSync(0, "utf8") : readFileSync(surface, "utf8"));
+    // Accept an OpenAPI doc too: `reconstruct --format openapi` emits { paths } (no `endpoints`), and
+    // feeding that straight back used to make diff/prove/report silently do nothing. Convert paths ->
+    // endpoints so the canonical surface round-trips and an OpenAPI spec is a valid --surface input.
+    if ((!Array.isArray(m.endpoints) || !m.endpoints.length) && m.paths && typeof m.paths === "object") {
+      m.endpoints = [];
+      for (const [p, ops] of Object.entries(m.paths)) {
+        if (!ops || typeof ops !== "object") continue;
+        const tmpl = p.replace(/\{[^}]+\}/g, "{param}");
+        for (const method of Object.keys(ops)) {
+          if (!/^(get|post|put|patch|delete|head|options)$/i.test(method)) continue;
+          m.endpoints.push({ method: method.toUpperCase(), path: tmpl, file: "openapi" });
+        }
+      }
+      if (Array.isArray(m["x-aperta-routes"])) m.routes = m.routes || m["x-aperta-routes"];
+    }
+    if (!Array.isArray(m.endpoints) || !m.endpoints.length) {
+      process.stderr.write("aperta: WARNING - this surface has 0 endpoints; diff/prove/report will find nothing. Reconstruct with `--format json` (not openapi/endpoints) to feed the full model.\n");
+    }
+    return m;
+  }
   if (js) return reconstruct(js);
   throw new Error("provide --surface <json|-> or --js <path>");
 }
