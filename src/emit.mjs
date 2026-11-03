@@ -110,7 +110,7 @@ export function toSARIF({ diff = null, session = null, bolas = [], findings = nu
     results.push({
       ruleId: BOLA_RULE.id,
       level: "error",
-      message: { text: b.reason },
+      message: { text: b.reason || `Confirmed BOLA in ${b.endpoint || "object endpoint"} via the sibling-endpoint oracle.` },
       locations: [{ logicalLocations: [{ fullyQualifiedName: b.endpoint, kind: "member" }] }],
       properties: { class: "BOLA", attacker: b.attacker, victim: b.victim, oracle: b.oracle },
     });
@@ -218,6 +218,8 @@ function selfTest() {
   check(s.runs[0].tool.driver.rules.length === 2, "two rules registered");
   check(s.runs[0].results.every((r) => r.ruleId && r.message.text && r.locations.length), "results well-formed");
   check(s.runs[0].results.find((r) => r.ruleId === "aperta/confirmed-bola").level === "error", "BOLA is error-level");
+  const sNoReason = toSARIF({ bolas: [{ verdict: "CONFIRMED", endpoint: "/api/x/{param}" }] });
+  check(typeof sNoReason.runs[0].results[0].message.text === "string" && sNoReason.runs[0].results[0].message.text.length > 0, "SARIF result always has message.text (schema-required) even without a reason");
   check(JSON.parse(JSON.stringify(s)), "SARIF is JSON-serializable");
 
   const tpl = toNucleiTemplate(bola);

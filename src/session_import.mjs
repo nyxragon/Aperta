@@ -38,12 +38,33 @@ function hostMatchesDomain(host, domain) {
 }
 
 // Collapse parsed cookies into a single Cookie header value. If `host` is given, only cookies
-// scoped to it are included; otherwise all are sent. Last value for a name wins.
+// scoped to it are included; otherwise all are sent. Last value for a name wins. Values are stripped
+// of `;`/CR/LF so a crafted jar value cannot inject an extra cookie into the header.
+const cookieSafe = (s) => String(s).replace(/[;\r\n]/g, "");
 export function cookieHeader(cookies, { host } = {}) {
   const scoped = host ? cookies.filter((c) => hostMatchesDomain(host, c.domain)) : cookies;
   const byName = new Map();
-  for (const c of scoped) byName.set(c.name, c.value);
+  for (const c of scoped) byName.set(cookieSafe(c.name), cookieSafe(c.value));
   return [...byName].map(([n, v]) => `${n}=${v}`).join("; ");
+}
+
+// Auth / CSRF request headers Aperta should carry on a session (so a token-auth app is not left
+// silently unauthenticated when its auth lives in a header rather than a cookie).
+const AUTH_HEADER_RE = /^(authorization|x-csrf-token|x-xsrf-token|x-csrftoken|x-auth-token|x-access-token|x-api-key|api-key|x-session-token|cookie)$/i;
+export function authHeadersFromHar(har) {
+  const entries = har?.log?.entries || (Array.isArray(har) ? har : []);
+  const out = {};
+  for (const e of entries) {
+    const hit = {};
+    for (const h of e.request?.headers || []) {
+      const n = (h.name || "").toLowerCase();
+      if (n === "cookie") continue; // cookies handled separately
+      if (AUTH_HEADER_RE.test(n) && h.value && !(h.name in out)) hit[h.name] = h.value;
+    }
+    Object.assign(out, hit);
+    if (Object.keys(out).length) break; // first request that carries auth wins
+  }
+  return out;
 }
 
 // Pull the Cookie header the browser actually sent from a HAR (fallback when no jar is supplied).
@@ -63,7 +84,7 @@ export function cookieFromHar(har) {
 
 // Assemble a session object. `host` scopes the jar; a HAR, if supplied, is attached as `traffic`
 // so the diff can run runtime-authoritatively (and seeds the Cookie if no jar is given).
-export function buildSession({ name, role, jarText, har, apiBase, host } = {}) {
+export function buildSession({ name, role, jarText, har, apiBase, host, extraHeaders } = {}) {
   if (!name) throw new Error("session needs a --name");
   const session = { name };
   if (role) session.role = role;
@@ -75,6 +96,10 @@ export function buildSession({ name, role, jarText, har, apiBase, host } = {}) {
     const c = cookieFromHar(har);
     if (c) headers.Cookie = c;
   }
+  // carry header-borne auth (Bearer / CSRF / API key) from the HAR, else a token-auth app yields a
+  // silently-unauthenticated session and a meaningless diff (the same footgun as a dropped cookie).
+  if (har) for (const [k, v] of Object.entries(authHeadersFromHar(har))) if (!(k in headers)) headers[k] = v;
+  if (extraHeaders) for (const [k, v] of Object.entries(extraHeaders)) headers[k] = v; // caller override wins
   session.headers = headers;
   if (apiBase) session.apiBase = apiBase;
   if (har) session.traffic = har;
@@ -111,6 +136,19 @@ function selfTest() {
   const s2 = buildSession({ name: "bob", har });
   check(s2.headers.Cookie === "JSESSIONID=FROMHAR", "HAR fallback seeds the Cookie header");
   check(s2.traffic === har, "HAR is attached as traffic for runtime-authoritative diff");
+
+  // header-borne auth (Bearer / CSRF) must be carried, not silently dropped
+  const harTok = { log: { entries: [{ request: { method: "GET", url: "https://app.example.com/api/me", headers: [
+    { name: "Authorization", value: "Bearer SECRETTOKEN" }, { name: "X-CSRF-Token", value: "csrf123" }, { name: "Accept", value: "*/*" },
+  ] } }] } };
+  const s3 = buildSession({ name: "carol", har: harTok });
+  check(s3.headers.Authorization === "Bearer SECRETTOKEN", "Bearer auth header lifted from HAR");
+  check(s3.headers["X-CSRF-Token"] === "csrf123", "CSRF header lifted from HAR");
+  check(s3.headers.Accept === undefined, "a non-auth header is not carried");
+
+  // cookie value injection is neutralized (a value with ';' cannot add a second cookie)
+  const inj = cookieHeader([{ name: "SID", value: "abc; admin=true", domain: "x", path: "/" }]);
+  check(!inj.includes(";"), "cookie value with ';' cannot inject a second cookie");
 
   console.log(`session_import self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

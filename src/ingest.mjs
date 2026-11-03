@@ -37,16 +37,23 @@ export function endpointsFromHar(har, opts = {}) {
 // (method defaults to GET). This is the hook an agent writes into after recovering the surface of an
 // UNKNOWN framework any way it can (driving the app, a bespoke extractor), so the deterministic
 // diff/prove stages still run. Blank lines and "#" comments are skipped.
+const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"]);
 export function endpointsFromList(text) {
   const seen = new Set();
   const out = [];
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    const m = line.match(/^([A-Z]+)\s+(\/\S*)/) || line.match(/^(\/\S*)/);
-    if (!m) continue;
-    const method = m[2] ? m[1].toUpperCase() : "GET";
-    const path = (m[2] || m[1]).split("?")[0];
+    let method = "GET", path = null;
+    const m = line.match(/^([A-Za-z]+)\s+(\S+)/);           // "<word> <token>" (verb case-insensitive)
+    if (m) {
+      if (HTTP_METHODS.has(m[1].toUpperCase())) { method = m[1].toUpperCase(); path = m[2]; }
+      else path = m[2];                                      // leading word is not a method -> treat as GET, keep the path
+    } else {
+      path = line.split(/\s+/)[0];                           // a bare path
+    }
+    path = (path || "").split("?")[0];
+    if (!path.startsWith("/") && !/^https?:\/\//.test(path)) continue; // not a path -> skip (e.g. "GET notapath")
     const key = `${method} ${path}`;
     if (!seen.has(key)) { seen.add(key); out.push({ method, path, file: "list" }); }
   }
@@ -61,7 +68,11 @@ export function sourcesFromSourceMap(mapJson) {
   for (let i = 0; i < sources.length; i++) {
     const content = contents[i];
     if (typeof content === "string" && content.length) {
-      out.push({ path: String(sources[i] || `source_${i}`).replace(/[^\w.\-/]/g, "_"), content });
+      // sanitize chars, then JAIL the path: drop any ".." and empty/leading-slash segments so a
+      // "webpack:///../../../etc/passwd" source cannot escape a write directory.
+      const safe = String(sources[i] || `source_${i}`).replace(/[^\w.\-/]/g, "_")
+        .split("/").filter((s) => s && s !== "..").join("/") || `source_${i}`;
+      out.push({ path: safe, content });
     }
   }
   return out;
@@ -121,6 +132,12 @@ function selfTest() {
   check(list.length === 3, "endpoint list parsed (comment + blank skipped)");
   check(list.some((e) => e.method === "DELETE" && e.path === "/api/orders/{param}"), "explicit method parsed");
   check(list.some((e) => e.method === "GET" && e.path === "/api/me/orders"), "bare path defaults to GET");
+
+  const list2 = endpointsFromList("get /api/low\nFOOBAR /api/garbage\nGET notapath\nPOST /api/ok");
+  check(list2.some((e) => e.method === "GET" && e.path === "/api/low"), "lowercase verb is parsed (not dropped)");
+  check(list2.some((e) => e.method === "GET" && e.path === "/api/garbage"), "a non-method leading word is not accepted as a verb (defaults GET, keeps path)");
+  check(!list2.some((e) => e.method === "FOOBAR"), "garbage verb is never emitted as a method");
+  check(!list2.some((e) => e.path === "notapath"), "a non-path token is skipped");
 
   console.log(`ingest self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
