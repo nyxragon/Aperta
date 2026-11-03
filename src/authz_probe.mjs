@@ -227,9 +227,22 @@ export async function authzDiff(baseURL, endpoints, sessions, defaultApiBase = "
     ctx[s.name] = { base, observed: observedReach(s.traffic), source: {} };
   }
 
+  const baseOrigin = (() => { try { return new URL(baseURL).origin; } catch { return null; } })();
   const rows = [];
   for (const e of endpoints) {
     const row = { method: e.method, path: e.path, status: {}, meta: {}, source: {} };
+    // SCOPE SAFETY: a bundle may reference a cross-origin API host. Do not auto-probe a host other
+    // than --base (it may be out of engagement scope). Surface it, do not touch it; the operator can
+    // re-run with --base set to that origin to test it explicitly.
+    if (e.crossOrigin && e.origin && baseOrigin && e.origin !== baseOrigin) {
+      for (const s of sessions) {
+        row.status[s.name] = 0;
+        row.meta[s.name] = { crossOrigin: e.origin, note: "cross-origin, not probed (set --base to this origin to test)" };
+        row.source[s.name] = "cross-origin-skipped";
+      }
+      rows.push(row);
+      continue;
+    }
     for (const s of sessions) {
       const c = ctx[s.name];
       const cp = concretePath(e.path, c.base);
@@ -345,6 +358,7 @@ function selfTest() {
   const endpoints = [
     { method: "GET", path: "{param}/orders/{param}" },
     { method: "GET", path: "{param}/admin/users" },
+    { method: "GET", path: "https://evil.other.io/x", crossOrigin: true, origin: "https://evil.other.io" },
   ];
   const sessions = [
     { name: "alice", role: "user", headers: {}, traffic: har },     // saw orders, never admin
@@ -360,6 +374,9 @@ function selfTest() {
     // alice's admin endpoint is status 0 (not gated), so it is NOT counted hidden here (honest:
     // offline we cannot probe; with a live base a 403 would make it hidden). Assert admin reached it:
     check(diff.perSession.admin.reachable.includes("GET {param}/admin/users"), "admin reachable for admin/users from traffic");
+    // SCOPE SAFETY: a cross-origin endpoint (different host than --base) is never probed.
+    const xrow = diff.matrix.find((r) => r.path === "https://evil.other.io/x");
+    check(xrow && xrow.source.alice === "cross-origin-skipped" && xrow.status.alice === 0, "cross-origin endpoint is NOT probed (scope safety)");
     console.log(`authz_probe self-test: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);
   });

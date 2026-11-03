@@ -9,8 +9,9 @@
 //
 // The LLM is NOT used here: everything below is deterministic AST. The LLM is a later
 // fallback only for gates this static pass cannot resolve.
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { parse } from "@babel/parser";
 import _traverse from "@babel/traverse";
 import { parseNextBuildManifest, parseModuleFederation } from "./frameworks_modern.mjs";
@@ -64,22 +65,29 @@ export function fingerprint(target) {
 }
 
 // Collect string-valued identifiers for constant propagation (minified `cr="/api"`).
-function collectConsts(ast) {
-  const consts = new Map();
+//
+// Minified bundles reuse short names (`cr`, `e`, `t`) across thousands of scopes with DIFFERENT
+// values. A flat name->value map lets whichever declaration the walk saw last win for every scope,
+// which FABRICATES wrong paths (e.g. an orders endpoint resolving under an unrelated base). We have
+// no scope context here, so we only propagate a name whose value is UNAMBIGUOUS file-wide (exactly
+// one distinct string across all its declarations/assignments). An ambiguous name is left
+// unresolved, so the template keeps a `{param}` hole instead of a confidently-wrong literal. A wrong
+// path is worse than an unresolved one: under live probing it would hit a fabricated URL.
+export function collectConsts(ast) {
+  const seen = new Map(); // name -> Set of distinct string values
+  const add = (name, val) => { if (!seen.has(name)) seen.set(name, new Set()); seen.get(name).add(val); };
   traverse(ast, {
     VariableDeclarator(path) {
       const { id, init } = path.node;
-      if (id.type === "Identifier" && init && init.type === "StringLiteral") {
-        consts.set(id.name, init.value);
-      }
+      if (id.type === "Identifier" && init && init.type === "StringLiteral") add(id.name, init.value);
     },
     AssignmentExpression(path) {
       const { left, right } = path.node;
-      if (left.type === "Identifier" && right.type === "StringLiteral" && !consts.has(left.name)) {
-        consts.set(left.name, right.value);
-      }
+      if (left.type === "Identifier" && right.type === "StringLiteral") add(left.name, right.value);
     },
   });
+  const consts = new Map();
+  for (const [name, vals] of seen) if (vals.size === 1) consts.set(name, [...vals][0]);
   return consts;
 }
 
@@ -112,6 +120,13 @@ function resolvePath(node, consts) {
   }
   if (node.type === "Identifier" && consts.has(node.name)) return consts.get(node.name);
   return null;
+}
+
+// Tag an absolute-URL endpoint with its origin so a diff can scope it (probe only the --base origin
+// by default). Relative paths carry no tag.
+function originTag(url, isAbsolute) {
+  if (!isAbsolute) return {};
+  try { return { crossOrigin: true, origin: new URL(url.replace(/\{param\}/g, "1")).origin }; } catch { return {}; }
 }
 
 function methodOf(optsNode) {
@@ -347,12 +362,15 @@ export function reconstruct(distDir) {
         if (!isFetch && !isAxios) return;
         const url = resolvePath(path.node.arguments[0], consts);
         if (!url || !url.includes("/")) return;
-        if (!url.startsWith("/") && !url.startsWith("{")) return; // keep app-relative paths
+        const isAbsolute = /^https?:\/\//.test(url);
+        // keep app-relative paths and ABSOLUTE API origins (a SPA that calls api.example.com has that
+        // whole surface invisible if we drop it); only skip truly unresolvable non-path strings.
+        if (!isAbsolute && !url.startsWith("/") && !url.startsWith("{")) return;
         // drop paths with no literal segment (e.g. bare "/", or only params), framework noise
         if (url.replace(/\{param\}/g, "").replace(/\//g, "").length === 0) return;
         const method = isAxios ? c.property.name.toUpperCase() : methodOf(path.node.arguments[1]);
         const key = method + " " + url;
-        if (!endpoints.has(key)) endpoints.set(key, { method, path: url, file: file.split("/").pop() });
+        if (!endpoints.has(key)) endpoints.set(key, { method, path: url, file: file.split("/").pop(), ...originTag(url, isAbsolute) });
       },
       ObjectExpression(path) {
         // Next.js _buildManifest: { sortedPages: ["/","/admin",...], "/path":[chunks] }
@@ -399,8 +417,37 @@ export function reconstruct(distDir) {
   return model;
 }
 
+// --- self-test (offline: a temp fixture through the real reconstruct path) ---------------
+function selfTest() {
+  let pass = 0, fail = 0;
+  const check = (c, m) => (c ? pass++ : (fail++, console.error("FAIL:", m)));
+  const dir = mkdtempSync(join(tmpdir(), "aperta-recon-"));
+  try {
+    // `cr` is reused across two scopes with DIFFERENT bases (minifier reuse). `base` is unambiguous.
+    writeFileSync(join(dir, "app.js"), `
+      function a(id){ const cr="/api/v1"; return fetch(\`\${cr}/orders/\${id}\`); }
+      function b(id){ const cr="/internal/secret"; return fetch(\`\${cr}/users/\${id}\`); }
+      function c(id){ const base="/api"; return fetch(\`\${base}/health\`); }
+      function d(id){ return fetch(\`https://api.example.com/v2/payments/\${id}\`); }
+    `);
+    const m = reconstruct(dir);
+    const paths = m.endpoints.map((e) => e.path);
+    check(!paths.some((p) => p.includes("/internal/secret/orders")), "ambiguous const is NOT fabricated onto the orders base");
+    check(!paths.some((p) => p.includes("/api/v1/users")), "ambiguous const is NOT fabricated onto the users base");
+    check(paths.includes("{param}/orders/{param}") && paths.includes("{param}/users/{param}"), "ambiguous base collapses to an honest {param} hole, not a wrong literal");
+    check(paths.includes("/api/health"), "an UNAMBIGUOUS const still propagates (/api/health resolved)");
+    const abs = m.endpoints.find((e) => e.path === "https://api.example.com/v2/payments/{param}");
+    check(abs && abs.crossOrigin === true && abs.origin === "https://api.example.com", "absolute cross-origin API endpoint is kept and tagged with its origin");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log(`reconstruct self-test: ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}
+
 // CLI
 if (import.meta.url === `file://${process.argv[1]}`) {
+  if (process.argv.includes("--self-test")) selfTest();
   const dir = process.argv[2];
   if (!dir) {
     console.error("usage: node src/reconstruct.mjs <dist/assets dir>");
