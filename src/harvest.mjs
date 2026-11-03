@@ -31,6 +31,10 @@ export function extractChunkRefs(code, baseUrl) {
   const add = (u) => { try { out.add(new URL(u, baseUrl).href); } catch {} };
   for (const m of String(code).matchAll(/["'`](\/?(?:[\w./-]*?(?:static|assets|_next|chunks|build)\/)[\w./-]*?\.m?js)["'`]/gi)) add(m[1]);
   for (const m of String(code).matchAll(/["'`]([\w./-]+\.[0-9a-f]{6,}\.(?:chunk\.)?m?js)["'`]/gi)) add(m[1]);
+  // Vite/Rollup code-split chunk: a relative or bare `Name-<base64url hash>.js` (hash is not lowercase
+  // hex). Resolve it against the BUNDLE's own URL (baseUrl), so `./Admin-Bt2N-p1k.js` next to
+  // /assets/index-x.js becomes /assets/Admin-Bt2N-p1k.js, not /Admin-...js off the page root.
+  for (const m of String(code).matchAll(/["'`](\.{0,2}\/[\w./-]*?[\w]+[-.][A-Za-z0-9_-]{6,}\.m?js)["'`]/g)) add(m[1]);
   return [...out];
 }
 
@@ -64,11 +68,12 @@ export async function harvest(pageUrl, { outDir, max = 60, headers = {} } = {}) 
   for (const u of queue) {
     if (seen.has(u) || fetched.length >= max) continue; seen.add(u);
     const r = await get(u, headers);
-    if (r.ok && /javascript|ecmascript|^$|text\/plain/i.test(r.ct || "") && r.body) { save(r.body); fetched.push({ url: u, bytes: r.body.length }); expand.push(r.body); }
+    if (r.ok && /javascript|ecmascript|^$|text\/plain/i.test(r.ct || "") && r.body) { save(r.body); fetched.push({ url: u, bytes: r.body.length }); expand.push({ url: u, body: r.body }); }
   }
-  // level 1: same-origin chunk refs found inside those bundles
+  // level 1: same-origin chunk refs found inside those bundles, resolved against EACH bundle's own URL
+  // (so a relative `./chunk.js` lands in the bundle's dir, e.g. /assets/, not the page root).
   const refs = new Set();
-  for (const code of expand) for (const u of extractChunkRefs(code, pageUrl)) if (sameOrigin(u)) refs.add(u);
+  for (const { url, body } of expand) for (const u of extractChunkRefs(body, url)) if (sameOrigin(u)) refs.add(u);
   for (const u of refs) {
     if (seen.has(u) || fetched.length >= max) continue; seen.add(u);
     const r = await get(u, headers);
@@ -103,6 +108,11 @@ function selfTest() {
   check(refs.includes("https://app.example.com/static/js/42.9f8e7d6c.chunk.js"), "webpack chunk ref extracted");
   check(refs.includes("https://app.example.com/_next/static/chunks/pages/app.js"), "next chunk ref extracted");
   check(!refs.some((u) => u.includes("/api/orders")), "a non-chunk string is not harvested as a chunk");
+
+  // Vite/Rollup: a relative `./Name-<base64url hash>.js` resolves against the BUNDLE's dir, not the page
+  const vite = extractChunkRefs(`__vitePreload(()=>import("./Admin-Bt2N-p1k.js"),x);u("./util.js")`, "https://app.example.com/assets/index-CNec0UgK.js");
+  check(vite.includes("https://app.example.com/assets/Admin-Bt2N-p1k.js"), "vite code-split chunk resolved into the bundle's /assets dir");
+  check(!vite.some((u) => u.endsWith("/util.js")), "a plain relative import without a hash is not harvested (noise control)");
 
   console.log(`harvest self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
