@@ -138,8 +138,36 @@ export function detectOwnerKey(body) {
 }
 function constOwnerValue(objects, key) {
   if (!key) return null;
-  const vals = new Set(objects.map((o) => (o[key] != null ? String(o[key]) : null)).filter((v) => v != null));
+  const vals = new Set(objects
+    .map((o) => (o[key] != null && typeof o[key] !== "object" ? String(o[key]) : null)) // scalar owners only
+    .filter((v) => v != null));
   return vals.size === 1 ? [...vals][0] : null; // only trust it when the app states ONE owner for the set
+}
+
+// Legitimate cross-user access (shared / public / collaborator) is NOT a BOLA, and it is the #1 false
+// positive this oracle must resist: the object genuinely belongs to the victim, yet the attacker is
+// allowed to read it by design. Detect the app's own sharing signals in the returned object. If the
+// object is public, or shared with (or lists) the attacker, confirmation must NOT fire. Conservative:
+// when a sharing list exists and the attacker's identity is unknown, treat it as possibly-shared
+// (a lead), because a false CONFIRMED is worse than a missed one.
+const SHARE_BOOL = ["public", "ispublic", "shared", "isshared", "global", "isglobal", "everyone"];
+const SHARE_VIS_KEYS = ["visibility", "access", "accesslevel", "scope", "privacy", "sharing"];
+const SHARE_PUBLIC_VALS = new Set(["public", "shared", "global", "everyone", "org", "organization", "team", "all", "anyone", "unlisted"]);
+const SHARE_LIST_KEYS = ["sharedwith", "shared_with", "collaborators", "members", "viewers", "editors", "acl", "participants", "guests", "contributors", "shares"];
+
+export function detectSharing(body, attackerId) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  for (const k of Object.keys(body)) {
+    const lk = k.toLowerCase().replace(/[_-]/g, "");
+    const v = body[k];
+    if (SHARE_BOOL.includes(lk) && v === true) return `${k}=true (object is public/shared)`;
+    if (SHARE_VIS_KEYS.includes(lk) && typeof v === "string" && SHARE_PUBLIC_VALS.has(v.toLowerCase())) return `${k}="${v}" (not private)`;
+    if (SHARE_LIST_KEYS.includes(lk) && Array.isArray(v) && v.length) {
+      const members = v.map((x) => (x && typeof x === "object" ? String(x.id ?? x.user ?? x.email ?? x.name ?? "") : String(x)));
+      if (attackerId == null || members.includes(String(attackerId))) return `${k} shares this object (attacker may be authorized)`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -201,9 +229,14 @@ export async function siblingOracleBOLA(base, cfg) {
   const autoOwnerKey = ownerKey || detectOwnerKey(attackerGetsForeign && attackerGetsForeign.body);
   const vOwn = autoOwnerKey ? (victimOwnerVal ?? constOwnerValue(victim.objects, autoOwnerKey)) : null;
   const aOwn = autoOwnerKey ? (attackerOwnerVal ?? constOwnerValue(attacker.objects, autoOwnerKey)) : null;
-  const ownerApplicable = Boolean(autoOwnerKey && vOwn != null &&
-    attackerGetsForeign && attackerGetsForeign.body && attackerGetsForeign.body[autoOwnerKey] != null);
-  const ownerObserved = ownerApplicable ? String(attackerGetsForeign.body[autoOwnerKey]) : null;
+  // owner gate is applicable ONLY for a scalar owner value: a nested object owner (owner:{name:..})
+  // stringifies to "[object Object]" for everyone and would wrongly fail the gate, suppressing a real
+  // break. When the owner is non-scalar, skip the gate (data_matches_victim still carries the proof).
+  const ownerVal = autoOwnerKey && attackerGetsForeign && attackerGetsForeign.body ? attackerGetsForeign.body[autoOwnerKey] : null;
+  const ownerApplicable = Boolean(autoOwnerKey && vOwn != null && ownerVal != null && typeof ownerVal !== "object");
+  const ownerObserved = ownerApplicable ? String(ownerVal) : null;
+  // sharing / public / collaborator access = legitimate, not BOLA (the top false positive).
+  const sharing = detectSharing(attackerGetsForeign && attackerGetsForeign.body, aOwn);
 
   const attackerBody = attackerGetsForeign && attackerGetsForeign.body;
   const dataMatches = attackerGetsForeign && attackerGetsForeign.status === 200 &&
@@ -224,6 +257,8 @@ export async function siblingOracleBOLA(base, cfg) {
       expected: "200 + id matches", observed: `${controlOwn.status}`, pass: controlOwn.status === 200 && String(controlOwn.body && controlOwn.body[idKey]) === String(ownId) },
     { id: "control_nonexistent", label: "catch-all ruled out (format-valid unowned id is not served)",
       expected: `not 200 for ${nonexistentId}`, observed: `${controlMissing.status}`, pass: controlMissing.status !== 200 },
+    { id: "not_shared", label: "the object is not shared/public to the attacker (would be legitimate access)",
+      expected: "no sharing/visibility signal granting the attacker access", observed: sharing || "none", pass: !sharing },
   ];
   if (ownerApplicable) {
     gates.push({ id: "owner_field", label: `the object's own '${autoOwnerKey}' names ${cfg.victim.u}, not ${cfg.attacker.u}`,
@@ -323,6 +358,14 @@ function selfTest() {
   check(detectOwnerKey({ id: 1 }) === null, "no owner key");
   check(constOwnerValue([{ owner: "bob" }, { owner: "bob" }], "owner") === "bob", "constant owner value");
   check(constOwnerValue([{ owner: "bob" }, { owner: "x" }], "owner") === null, "mixed owner -> untrusted (null)");
+  check(constOwnerValue([{ owner: { name: "bob" } }], "owner") === null, "non-scalar owner -> untrusted (null)");
+
+  // detectSharing: legitimate cross-user access signals
+  check(detectSharing({ id: 1, visibility: "public" }) !== null, "visibility:public is a sharing signal");
+  check(detectSharing({ id: 1, isPublic: true }) !== null, "isPublic:true is a sharing signal");
+  check(detectSharing({ id: 1, collaborators: ["alice"] }, "alice") !== null, "attacker in collaborators is a sharing signal");
+  check(detectSharing({ id: 1, collaborators: ["carol"] }, "alice") === null, "attacker NOT in collaborators -> still a break (no signal)");
+  check(detectSharing({ id: 1, owner: "bob", visibility: "private" }) === null, "a private owned object has no sharing signal");
 
   console.log(`oracle self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

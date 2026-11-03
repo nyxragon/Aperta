@@ -12,7 +12,7 @@
 // receives the SAME non-trivial node the victim legitimately sees), never on id-equality alone, so an
 // id-echo stub cannot confirm. The nonexistent control uses a format-preserving derived gid.
 
-import { isNonTrivialObject, bodiesEqual, deriveNonexistentId, detectOwnerKey } from "./oracle.mjs";
+import { isNonTrivialObject, bodiesEqual, deriveNonexistentId, detectOwnerKey, detectSharing } from "./oracle.mjs";
 
 // Read a value at a dot path ("viewer.orders" / "data.myOrders") from an object; "" => the object.
 export function atPath(obj, path) {
@@ -104,7 +104,9 @@ export async function graphqlOracleBOLA(base, cfg) {
 
   const ownerKey = cfg.ownerKey || detectOwnerKey(attackerGetsForeign && attackerGetsForeign.body);
   const vOwn = ownerKey && victimForeign.body ? victimForeign.body[ownerKey] : null;
-  const ownerApplicable = Boolean(ownerKey && vOwn != null && attackerGetsForeign && attackerGetsForeign.body && attackerGetsForeign.body[ownerKey] != null);
+  const aVal = ownerKey && attackerGetsForeign && attackerGetsForeign.body ? attackerGetsForeign.body[ownerKey] : null;
+  const ownerApplicable = Boolean(ownerKey && vOwn != null && typeof vOwn !== "object" && aVal != null && typeof aVal !== "object");
+  const sharing = detectSharing(attackerGetsForeign && attackerGetsForeign.body, null);
 
   const gates = [
     { id: "foreign_sourced", label: `sibling attributes gid ${foreignId} to ${cfg.victim.name}, not ${cfg.attacker.name}`, expected: "victim-owned gid absent from attacker list", observed: `${foreignId}`, pass: true },
@@ -112,8 +114,9 @@ export async function graphqlOracleBOLA(base, cfg) {
     { id: "data_matches_victim", label: "the attacker's node equals the node the victim legitimately sees", expected: "attacker node == victim node (non-trivial)", observed: dataMatches ? "equal" : "differs/absent/trivial", pass: Boolean(dataMatches) },
     { id: "control_own", label: `${cfg.attacker.name} reads own gid ${ownId}`, expected: "present", observed: controlOwn.present ? "present" : "absent", pass: Boolean(controlOwn.present) },
     { id: "control_nonexistent", label: "catch-all ruled out (format-valid unowned gid returns null)", expected: `absent for ${nonexistentId}`, observed: controlMissing.present ? "present" : "absent", pass: !controlMissing.present },
+    { id: "not_shared", label: "the node is not shared/public to the attacker (would be legitimate access)", expected: "no sharing/visibility signal granting the attacker access", observed: sharing || "none", pass: !sharing },
   ];
-  if (ownerApplicable) gates.push({ id: "owner_field", label: `the node's '${ownerKey}' names ${cfg.victim.name}`, expected: `${ownerKey}=${vOwn}`, observed: `${ownerKey}=${attackerGetsForeign.body[ownerKey]}`, pass: String(attackerGetsForeign.body[ownerKey]) === String(vOwn) });
+  if (ownerApplicable) gates.push({ id: "owner_field", label: `the node's '${ownerKey}' names ${cfg.victim.name}`, expected: `${ownerKey}=${vOwn}`, observed: `${ownerKey}=${aVal}`, pass: String(aVal) === String(vOwn) });
 
   const confirmed = gates.every((g) => g.pass);
   const attackerDenied = reads === 0 && attackerGetsForeign && !attackerGetsForeign.present;

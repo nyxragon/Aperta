@@ -102,5 +102,48 @@ await withServer((req, res) => {
   check(r.reportable === false, "E: an earned negative is not reportable");
 });
 
+// F) PUBLIC resource: object is visibility:"public", served to anyone by design. NOT a BOLA.
+await withServer((req, res) => {
+  const u = who(req); if (!u) return json(res, 401, { error: "unauth" });
+  const url = new URL(req.url, "http://x");
+  if (url.pathname === "/api/me/things") return sibling(res, u);
+  const m = url.pathname.match(/^\/api\/things\/(.+)$/);
+  if (m) { const o = DATA.find((x) => x.id === decodeURIComponent(m[1])); return o ? json(res, 200, { ...o, visibility: "public" }) : json(res, 404, { error: "nf" }); }
+  return json(res, 404, { error: "nf" });
+}, async (base) => {
+  const r = await siblingOracleBOLA(base, cfg());
+  check(r.verdict !== "CONFIRMED", "F: a public object (visibility:public) is NOT a BOLA");
+  check(r.gates.find((g) => g.id === "not_shared")?.pass === false, "F: the not_shared gate is the one that fails");
+});
+
+// G) COLLABORATOR share: object lists the attacker as a collaborator (authorized). NOT a BOLA.
+await withServer((req, res) => {
+  const u = who(req); if (!u) return json(res, 401, { error: "unauth" });
+  const url = new URL(req.url, "http://x");
+  if (url.pathname === "/api/me/things") return sibling(res, u);
+  const m = url.pathname.match(/^\/api\/things\/(.+)$/);
+  if (m) { const o = DATA.find((x) => x.id === decodeURIComponent(m[1])); return o ? json(res, 200, { ...o, collaborators: ["alice"] }) : json(res, 404, { error: "nf" }); }
+  return json(res, 404, { error: "nf" });
+}, async (base) => {
+  const r = await siblingOracleBOLA(base, cfg());
+  check(r.verdict !== "CONFIRMED", "G: an object shared with the attacker (collaborator) is NOT a BOLA");
+});
+
+// H) NESTED-OBJECT owner, real BOLA: owner is {name}, no owner check. Must still CONFIRM (owner gate
+// is skipped as not-applicable, not failed, so the data contradiction still proves the break).
+await withServer((req, res) => {
+  const NESTED = [{ id: "a1", owner: { name: "alice" }, item: "Keyboard" }, { id: "b1", owner: { name: "bob" }, item: "Secret" }];
+  const u = who(req); if (!u) return json(res, 401, { error: "unauth" });
+  const url = new URL(req.url, "http://x");
+  if (url.pathname === "/api/me/things") return json(res, 200, { things: NESTED.filter((o) => o.owner.name === u) });
+  const m = url.pathname.match(/^\/api\/things\/(.+)$/);
+  if (m) { const o = NESTED.find((x) => x.id === decodeURIComponent(m[1])); return o ? json(res, 200, o) : json(res, 404, { error: "nf" }); }
+  return json(res, 404, { error: "nf" });
+}, async (base) => {
+  const r = await siblingOracleBOLA(base, cfg());
+  check(r.verdict === "CONFIRMED", "H: a real BOLA with a NESTED-object owner field still CONFIRMS (owner gate skipped, not failed)");
+  check(r.gates.find((g) => g.id === "owner_field") === undefined, "H: owner gate is not applicable for a non-scalar owner");
+});
+
 console.log(`oracle-negatives e2e: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
