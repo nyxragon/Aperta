@@ -5,6 +5,9 @@
 // reaches another user's data is then a job for the sibling oracle (prove) - impact, not reachability.
 import { probe, isGated, buildGatingOpts } from "./authz_probe.mjs";
 
+// State-changing verbs are never fired live unless the caller opts into unsafe (CLAUDE.md hard limit).
+const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 // Pure: the bypass variants for one (method, path). Each is {technique, method, path, headers}.
 export function bypassTransforms(method, path) {
   const out = [];
@@ -53,8 +56,12 @@ export async function probeBypasses(base, gatedEndpoints, session, rawOpts = {})
   const opts = buildGatingOpts(rawOpts);
   const headers = session.headers || {};
   const findings = [];
+  let skippedUnsafe = 0;
   for (const ep of gatedEndpoints) {
     for (const v of bypassTransforms(ep.method, ep.path)) {
+      // SAFETY: a verb-swap / method-override to a state-changing verb would send a live mutating
+      // request. Skip those unless --unsafe (lab / authorized). Read-only transforms still run.
+      if (STATE_CHANGING.has(v.method) && !opts.unsafe) { skippedUnsafe++; continue; }
       const cp = concrete(v.path);
       const r = await probe(base, v.method, cp, { ...headers, ...v.headers }, false);
       // a bypass is a real SUCCESS (2xx), not merely "not 401/403": a 404/405/500 is not getting in.
@@ -64,6 +71,7 @@ export async function probeBypasses(base, gatedEndpoints, session, rawOpts = {})
       }
     }
   }
+  findings.skippedUnsafe = skippedUnsafe; // state-changing transforms not fired (unless --unsafe)
   return findings;
 }
 

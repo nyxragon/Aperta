@@ -21,9 +21,15 @@ const check = (c, m) => (c ? pass++ : (fail++, console.error("FAIL:", m)));
 
 try {
   const gated = [{ method: "GET", path: "/api/v2/secret" }, { method: "GET", path: "/api/admin" }];
-  const findings = await probeBypasses(base, gated, { headers: {} });
+  // SAFETY default: state-changing verb-swaps are NOT fired without --unsafe.
+  const safe = await probeBypasses(base, gated, { headers: {} });
+  check(safe.some((f) => f.technique.startsWith("version-downgrade") && f.variant.includes("/api/v1/secret")), "read-only version-downgrade bypass still found by default");
+  check(!safe.some((f) => f.variant.startsWith("POST ")), "default run fires NO state-changing verb (no POST probe)");
+  check(safe.skippedUnsafe > 0, "default run reports how many state-changing transforms it skipped");
+  // Opt in to the mutating transforms on this controlled lab.
+  const findings = await probeBypasses(base, gated, { headers: {} }, { unsafe: true });
   check(findings.some((f) => f.technique.startsWith("version-downgrade") && f.variant.includes("/api/v1/secret")), "version-downgrade v2->v1 bypass found");
-  check(findings.some((f) => f.technique.startsWith("verb-swap") && f.variant.startsWith("POST /api/admin")), "verb-swap GET->POST bypass found");
+  check(findings.some((f) => f.technique.startsWith("verb-swap") && f.variant.startsWith("POST /api/admin")), "verb-swap GET->POST bypass found (with --unsafe)");
   check(findings.every((f) => f.status === 200), "every reported bypass actually reached (200)");
   console.log(`bypass e2e: ${pass} passed, ${fail} failed`);
 } finally {

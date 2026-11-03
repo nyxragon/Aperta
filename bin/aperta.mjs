@@ -128,6 +128,7 @@ function parseGatingOpts() {
     gatedRedirect: gr ? new RegExp(gr) : null,
     contentMarker: cm ? new RegExp(cm) : null,
     denyMarker: dm ? new RegExp(dm) : null,
+    unsafe: args.includes("--unsafe"), // opt-in to fire state-changing verbs live (lab / authorized only)
   };
 }
 
@@ -298,6 +299,7 @@ async function cmdBypass() {
   });
   console.error(`${gated.length} endpoint(s) gated from '${session.name}'; probing bypass transforms`);
   const findings = await probeBypasses(base, gated, session, gatingOpts);
+  if (findings.skippedUnsafe && !gatingOpts.unsafe) console.error(`${findings.skippedUnsafe} state-changing transform(s) skipped for safety; pass --unsafe on an authorized lab to include verb-swaps to POST/PUT/PATCH/DELETE`);
   console.log(JSON.stringify(findings, null, 2));
   console.error(findings.length ? `${findings.length} bypass(es) flipped gated -> reached (confirm impact with 'prove')` : "no bypass flipped a gated endpoint");
   process.exit(findings.length ? 0 : 1);

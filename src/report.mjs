@@ -94,9 +94,19 @@ function bolaChain(b) {
     if (snippet.length > 1200) snippet = snippet.slice(0, 1200) + "\n...";
     received = `<div class="received"><div class="received-h">Data <b>${esc(b.attacker)}</b> received that belongs to <b>${esc(b.victim)}</b>:</div><pre>${esc(snippet)}</pre></div>`;
   }
+  // the oracle tape: each confirmation gate, observed, pass/fail. The negative control holding is the
+  // credibility beat a heuristic/LLM tool structurally cannot show; a not-confirmed names its one gap.
+  let tape = "";
+  if (Array.isArray(b.gates) && b.gates.length) {
+    const rows = b.gates.map((g) =>
+      `<div class="gate ${g.pass ? "ok" : "bad"}"><span class="gi">${g.pass ? "&#10003;" : "&#10007;"}</span>` +
+      `<span class="gl">${esc(g.label)}</span><span class="go">${esc(String(g.observed))}</span></div>`).join("");
+    tape = `<div class="tape"><div class="tape-h">Oracle tape (every gate observed, the verdict is their fold)</div>${rows}</div>`;
+  }
   return `<div class="chain ${ok ? "confirmed" : "unconfirmed"}">
-    <div class="chain-head"><code>${esc(b.method || "GET")} ${esc(b.endpoint)}</code> <span class="tag ${ok ? "crit" : "muted"}">${ok ? "CONFIRMED" : "NOT CONFIRMED"}</span></div>
+    <div class="chain-head"><code>${esc(b.method || "GET")} ${esc(b.endpoint)}</code> <span class="tag ${ok ? "crit" : "muted"}">${esc(b.verdict || (ok ? "CONFIRMED" : "NOT CONFIRMED"))}</span></div>
     <div class="flow">${flow}</div>
+    ${tape}
     ${received}
     <p class="reason">${esc(b.reason)}</p></div>`;
 }
@@ -143,7 +153,6 @@ export function toHTMLReport({ base = "", model = {}, diff = null, discovery = n
 :root{--bg:#f7f8fa;--card:#fff;--ink:#1a1d24;--sub:#5a6472;--line:#e3e7ee;--accent:#4f46e5;
 --reach:#1f9d55;--reach-bg:#e4f5ec;--gate:#b7791f;--gate-bg:#fbf3e2;--hide:#d4302f;--hide-bg:#fbe6e6;
 --unknown:#9aa3b0;--unknown-bg:#eef0f3;--crit:#d4302f;--good:#1f9d55;}
-:root:not([data-theme=light]) @media (prefers-color-scheme:dark){}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#161b23;--ink:#e7ebf2;--sub:#9aa6b6;--line:#262d38;--accent:#8b84ff;
 --reach:#54d88a;--reach-bg:#13301f;--gate:#e3b65c;--gate-bg:#33280f;--hide:#ff6b6a;--hide-bg:#3a1414;
 --unknown:#6b7585;--unknown-bg:#1c222b;--crit:#ff6b6a;--good:#54d88a;}}
@@ -195,6 +204,12 @@ td.c{font-weight:700;font-size:11px;letter-spacing:.03em}
 .step.muted{opacity:.6}
 .arrow{display:flex;align-items:center;color:var(--sub);font-size:18px}
 .reason{margin:10px 0 0;font-size:12px;color:var(--sub)}
+.tape{margin:12px 0 0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.tape-h{font-size:11px;color:var(--sub);padding:6px 10px;background:var(--unknown-bg);text-transform:uppercase;letter-spacing:.04em}
+.gate{display:flex;align-items:baseline;gap:8px;padding:6px 10px;font-size:12px;border-top:1px solid var(--line)}
+.gate .gi{font-weight:700;width:14px;flex:none}
+.gate.ok .gi{color:var(--good)}.gate.bad .gi{color:var(--crit)}
+.gate .gl{flex:1}.gate .go{font-family:ui-monospace,Menlo,monospace;color:var(--sub);font-size:11px}
 .received{margin:10px 0 0}
 .received-h{font-size:12px;color:var(--sub);margin-bottom:4px}
 .received pre{margin:0;background:var(--hide-bg);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow-x:auto;color:var(--ink)}

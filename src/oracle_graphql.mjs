@@ -7,6 +7,12 @@
 // list query, the attacker requests one, and a contradiction with controls (own=present,
 // nonexistent=absent) holding in the same run confirms the break. No id guessing, no response-diff,
 // no LLM. Deterministic on opaque GraphQL global ids, which is exactly where REST-id tools give up.
+//
+// As in the REST oracle, confirmation is gated on a real cross-user DATA contradiction (the attacker
+// receives the SAME non-trivial node the victim legitimately sees), never on id-equality alone, so an
+// id-echo stub cannot confirm. The nonexistent control uses a format-preserving derived gid.
+
+import { isNonTrivialObject, bodiesEqual, deriveNonexistentId, detectOwnerKey } from "./oracle.mjs";
 
 // Read a value at a dot path ("viewer.orders" / "data.myOrders") from an object; "" => the object.
 export function atPath(obj, path) {
@@ -71,53 +77,83 @@ export async function graphqlOracleBOLA(base, cfg) {
 
   const attackerOwned = await ownedGIDs(base, cfg.endpoint, aH, cfg.siblingQuery, cfg.collectionPath, idField);
   const victimOwned = await ownedGIDs(base, cfg.endpoint, vH, cfg.siblingQuery, cfg.collectionPath, idField);
+  const base_evidence = { attacker_owned: [...attackerOwned], victim_owned: [...victimOwned] };
 
+  if (attackerOwned.size === 0 && victimOwned.size === 0) return gqlInapplicable(cfg, base_evidence, "both sibling list queries returned no nodes (invalid sessions, wrong collectionPath, or empty lists).");
   const foreignId = [...victimOwned].find((id) => !attackerOwned.has(id)) || null;
   const ownId = [...attackerOwned][0] || null;
-  const nonexistentId = "aperta-nonexistent-gid-00000000";
+  if (!foreignId) return gqlInapplicable(cfg, base_evidence, "no victim-owned global-id is absent from the attacker's own list.");
+  if (!ownId) return gqlInapplicable(cfg, base_evidence, "the attacker's own list is empty, so the own-id control cannot be established.");
+  const nonexistentId = deriveNonexistentId(foreignId);
+
+  // the record the VICTIM legitimately sees for this id (the ground truth the attacker must match)
+  const victimForeign = await getObjectGQL(base, cfg.endpoint, vH, cfg.objectQuery, foreignId, cfg.objectPath);
 
   const repeat = Math.max(1, cfg.repeat || 3);
-  let reproduced = 0, attackerGetsForeign = null;
-  if (foreignId) {
-    for (let i = 0; i < repeat; i++) {
-      const r = await getObjectGQL(base, cfg.endpoint, aH, cfg.objectQuery, foreignId, cfg.objectPath);
-      attackerGetsForeign = r;
-      if (r.present && String(r.body?.[idField]) === String(foreignId)) reproduced++;
-    }
+  let reads = 0, attackerGetsForeign = null;
+  for (let i = 0; i < repeat; i++) {
+    const r = await getObjectGQL(base, cfg.endpoint, aH, cfg.objectQuery, foreignId, cfg.objectPath);
+    attackerGetsForeign = r;
+    if (r.present && isNonTrivialObject(r.body, idField) && String(r.body?.[idField]) === String(foreignId)) reads++;
   }
-  const controlOwn = ownId ? await getObjectGQL(base, cfg.endpoint, aH, cfg.objectQuery, ownId, cfg.objectPath) : null;
+  const controlOwn = await getObjectGQL(base, cfg.endpoint, aH, cfg.objectQuery, ownId, cfg.objectPath);
   const controlMissing = await getObjectGQL(base, cfg.endpoint, aH, cfg.objectQuery, nonexistentId, cfg.objectPath);
 
-  const bodyIsForeign = foreignId && reproduced === repeat;
-  const controlOwnOk = controlOwn && controlOwn.present;
-  const notCatchAll = controlMissing && !controlMissing.present;
+  const dataMatches = attackerGetsForeign && attackerGetsForeign.present && isNonTrivialObject(attackerGetsForeign.body, idField) &&
+    victimForeign.present && isNonTrivialObject(victimForeign.body, idField) && bodiesEqual(attackerGetsForeign.body, victimForeign.body);
 
-  const confirmed = Boolean(foreignId && bodyIsForeign && controlOwnOk && notCatchAll);
+  const ownerKey = cfg.ownerKey || detectOwnerKey(attackerGetsForeign && attackerGetsForeign.body);
+  const vOwn = ownerKey && victimForeign.body ? victimForeign.body[ownerKey] : null;
+  const ownerApplicable = Boolean(ownerKey && vOwn != null && attackerGetsForeign && attackerGetsForeign.body && attackerGetsForeign.body[ownerKey] != null);
+
+  const gates = [
+    { id: "foreign_sourced", label: `sibling attributes gid ${foreignId} to ${cfg.victim.name}, not ${cfg.attacker.name}`, expected: "victim-owned gid absent from attacker list", observed: `${foreignId}`, pass: true },
+    { id: "attacker_reads_foreign", label: `${cfg.attacker.name} reads gid ${foreignId} ${repeat}/${repeat}`, expected: `present + non-trivial node ${repeat}/${repeat}`, observed: `${reads}/${repeat}`, pass: reads === repeat },
+    { id: "data_matches_victim", label: "the attacker's node equals the node the victim legitimately sees", expected: "attacker node == victim node (non-trivial)", observed: dataMatches ? "equal" : "differs/absent/trivial", pass: Boolean(dataMatches) },
+    { id: "control_own", label: `${cfg.attacker.name} reads own gid ${ownId}`, expected: "present", observed: controlOwn.present ? "present" : "absent", pass: Boolean(controlOwn.present) },
+    { id: "control_nonexistent", label: "catch-all ruled out (format-valid unowned gid returns null)", expected: `absent for ${nonexistentId}`, observed: controlMissing.present ? "present" : "absent", pass: !controlMissing.present },
+  ];
+  if (ownerApplicable) gates.push({ id: "owner_field", label: `the node's '${ownerKey}' names ${cfg.victim.name}`, expected: `${ownerKey}=${vOwn}`, observed: `${ownerKey}=${attackerGetsForeign.body[ownerKey]}`, pass: String(attackerGetsForeign.body[ownerKey]) === String(vOwn) });
+
+  const confirmed = gates.every((g) => g.pass);
+  const attackerDenied = reads === 0 && attackerGetsForeign && !attackerGetsForeign.present;
+  const correctlyScoped = !confirmed && attackerDenied && victimForeign.present && isNonTrivialObject(victimForeign.body, idField) && controlOwn.present && !controlMissing.present;
+  const verdict = confirmed ? "CONFIRMED" : correctlyScoped ? "CORRECTLY-SCOPED" : "NOT-CONFIRMED";
+  const failed = gates.find((g) => !g.pass);
 
   return {
-    verdict: confirmed ? "CONFIRMED" : "NOT-CONFIRMED",
-    class: "BOLA",
-    confidence: confirmed ? "high" : "none",
-    method: "POST",
-    transport: "graphql",
-    idKey: idField,
+    verdict, class: "BOLA", confidence: confirmed || correctlyScoped ? "high" : "none", reportable: confirmed,
+    method: "POST", transport: "graphql", idKey: idField,
     endpoint: `${cfg.endpoint} ${cfg.objectPath}(id:)`,
     oracle: `graphql sibling query ${cfg.collectionPath} (the app's own ownership statement)`,
-    attacker: cfg.attacker.name,
-    victim: cfg.victim.name,
+    attacker: cfg.attacker.name, victim: cfg.victim.name, gates,
     evidence: {
-      attacker_owned: [...attackerOwned],
-      victim_owned: [...victimOwned],
+      ...base_evidence,
       foreign_id_tested: foreignId,
-      reproductions: `${reproduced}/${repeat}`,
+      reproductions: `${reads}/${repeat}`,
       attacker_get_foreign: attackerGetsForeign,
+      victim_get_foreign: { present: victimForeign.present, body: victimForeign.body },
+      data_matches_victim: Boolean(dataMatches),
+      owner_field: ownerApplicable ? { key: ownerKey, observed: attackerGetsForeign.body[ownerKey], victim: vOwn } : null,
       control_own_id: ownId,
-      control_own_present: controlOwn && controlOwn.present,
-      control_nonexistent_present: controlMissing && controlMissing.present,
+      control_own_present: controlOwn.present,
+      control_nonexistent_id: nonexistentId,
+      control_nonexistent_present: controlMissing.present,
     },
     reason: confirmed
-      ? `${cfg.attacker.name} fetched global-id ${foreignId}, which ${cfg.collectionPath} attributes to ${cfg.victim.name} and not to ${cfg.attacker.name}, a contradiction in the app's own authorization, with own-id present and nonexistent absent controls holding.`
-      : "No sibling contradiction with controls held.",
+      ? `${cfg.attacker.name} fetched global-id ${foreignId}, the SAME node ${cfg.collectionPath} and the object query give ${cfg.victim.name}, reproduced ${reads}/${repeat} with own-id present and nonexistent (${nonexistentId}) absent controls holding.`
+      : correctlyScoped
+        ? `Earned negative: gid ${foreignId} exists and is ${cfg.victim.name}'s, but ${cfg.attacker.name} is denied every time. The resolver enforces object-level authorization.`
+        : `Not confirmed (lead, keep digging). First unmet gate: ${failed ? failed.id + " (" + failed.observed + ")" : "unknown"}.`,
+  };
+}
+
+function gqlInapplicable(cfg, evidence, why) {
+  return {
+    verdict: "INAPPLICABLE", class: "BOLA", confidence: "none", reportable: false, method: "POST", transport: "graphql",
+    idKey: cfg.idField || "id", endpoint: `${cfg.endpoint} ${cfg.objectPath}(id:)`,
+    oracle: `graphql sibling query ${cfg.collectionPath} (the app's own ownership statement)`,
+    attacker: cfg.attacker.name, victim: cfg.victim.name, gates: [], evidence, reason: `Oracle inapplicable: ${why}`,
   };
 }
 

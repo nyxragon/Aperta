@@ -142,7 +142,9 @@ async function callTool(name, a = {}) {
       objectTemplate: a.object, siblingPath: a.sibling, collection: a.collection, idKey: a.idKey || "id",
       attacker: asSession(a.attacker), victim: asSession(a.victim),
     });
-    const out = { verdict: res.verdict, class: res.class, endpoint: res.endpoint, oracle: res.oracle, reason: res.reason, evidence: res.evidence };
+    // reportable is the machine-readable contract: only a CONFIRMED verdict may be promoted to a
+    // finding. A driving agent must never report a NOT-CONFIRMED / CORRECTLY-SCOPED / INAPPLICABLE.
+    const out = { verdict: res.verdict, reportable: res.reportable === true, class: res.class, endpoint: res.endpoint, oracle: res.oracle, gates: res.gates || [], reason: res.reason, evidence: res.evidence };
     if (res.verdict === "CONFIRMED") out.nucleiTemplatePath = writeArtifact("aperta-bola.yaml", toNucleiTemplate(res));
     return out;
   }

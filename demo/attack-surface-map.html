@@ -5,7 +5,6 @@
 :root{--bg:#f7f8fa;--card:#fff;--ink:#1a1d24;--sub:#5a6472;--line:#e3e7ee;--accent:#4f46e5;
 --reach:#1f9d55;--reach-bg:#e4f5ec;--gate:#b7791f;--gate-bg:#fbf3e2;--hide:#d4302f;--hide-bg:#fbe6e6;
 --unknown:#9aa3b0;--unknown-bg:#eef0f3;--crit:#d4302f;--good:#1f9d55;}
-:root:not([data-theme=light]) @media (prefers-color-scheme:dark){}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#161b23;--ink:#e7ebf2;--sub:#9aa6b6;--line:#262d38;--accent:#8b84ff;
 --reach:#54d88a;--reach-bg:#13301f;--gate:#e3b65c;--gate-bg:#33280f;--hide:#ff6b6a;--hide-bg:#3a1414;
 --unknown:#6b7585;--unknown-bg:#1c222b;--crit:#ff6b6a;--good:#54d88a;}}
@@ -57,6 +56,12 @@ td.c{font-weight:700;font-size:11px;letter-spacing:.03em}
 .step.muted{opacity:.6}
 .arrow{display:flex;align-items:center;color:var(--sub);font-size:18px}
 .reason{margin:10px 0 0;font-size:12px;color:var(--sub)}
+.tape{margin:12px 0 0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.tape-h{font-size:11px;color:var(--sub);padding:6px 10px;background:var(--unknown-bg);text-transform:uppercase;letter-spacing:.04em}
+.gate{display:flex;align-items:baseline;gap:8px;padding:6px 10px;font-size:12px;border-top:1px solid var(--line)}
+.gate .gi{font-weight:700;width:14px;flex:none}
+.gate.ok .gi{color:var(--good)}.gate.bad .gi{color:var(--crit)}
+.gate .gl{flex:1}.gate .go{font-family:ui-monospace,Menlo,monospace;color:var(--sub);font-size:11px}
 .received{margin:10px 0 0}
 .received-h{font-size:12px;color:var(--sub);margin-bottom:4px}
 .received pre{margin:0;background:var(--hide-bg);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow-x:auto;color:var(--ink)}
@@ -67,10 +72,10 @@ code{font-family:ui-monospace,Menlo,monospace}
 <body><div class="wrap">
 <header><h1>Attack surface map</h1><div class="tgt">http://localhost:5399 &middot; framework: react</div></header>
 <div class="stats"><div class="stat"><div class="n">5</div><div class="l">routes</div></div><div class="stat"><div class="n">5</div><div class="l">endpoints</div></div><div class="stat"><div class="n">2</div><div class="l">identities</div></div><div class="stat"><div class="n">1</div><div class="l">confirmed BOLA</div></div></div>
-
+<div class="warn">1 state-changing endpoint(s) were probed read-only (OPTIONS) for safety; their reachability is approximate. Re-run with --unsafe on an authorized lab to probe the real verb.</div>
 <section><h2>Privilege matrix</h2>
   <p class="sub">Every reconstructed endpoint probed as every identity. <b class="hidden-k">HIDDEN</b> = gated from this identity but reached by a higher-privilege one: the role-gated surface a low-priv session never sees.</p>
-  <div class="scroll"><table class="matrix"><thead><tr><th class="ep">endpoint</th><th><div class="idt">alice</div><div class="role">user</div></th><th><div class="idt">admin</div><div class="role">admin</div></th></tr></thead><tbody><tr><td class="ep">GET /api/admin/users/{param}</td><td class="c hidden" title="HTTP 403">HIDDEN</td><td class="c reachable" title="HTTP 200">reach</td></tr><tr><td class="ep">GET /api/admin/users</td><td class="c hidden" title="HTTP 403">HIDDEN</td><td class="c reachable" title="HTTP 200">reach</td></tr><tr><td class="ep">POST /api/login</td><td class="c gated" title="HTTP 401">gated</td><td class="c gated" title="HTTP 401">gated</td></tr><tr><td class="ep">GET /api/me/orders</td><td class="c reachable" title="HTTP 200">reach</td><td class="c reachable" title="HTTP 200">reach</td></tr><tr><td class="ep">GET /api/orders/{param}</td><td class="c reachable" title="HTTP 404">reach</td><td class="c reachable" title="HTTP 404">reach</td></tr></tbody></table></div></section>
+  <div class="scroll"><table class="matrix"><thead><tr><th class="ep">endpoint</th><th><div class="idt">alice</div><div class="role">user</div></th><th><div class="idt">admin</div><div class="role">admin</div></th></tr></thead><tbody><tr><td class="ep">GET /api/admin/users/{param}</td><td class="c hidden" title="HTTP 403">HIDDEN</td><td class="c reachable" title="HTTP 200">reach</td></tr><tr><td class="ep">GET /api/admin/users</td><td class="c hidden" title="HTTP 403">HIDDEN</td><td class="c reachable" title="HTTP 200">reach</td></tr><tr><td class="ep">POST /api/login</td><td class="c reachable" title="HTTP 204">reach</td><td class="c reachable" title="HTTP 204">reach</td></tr><tr><td class="ep">GET /api/me/orders</td><td class="c reachable" title="HTTP 200">reach</td><td class="c reachable" title="HTTP 200">reach</td></tr><tr><td class="ep">GET /api/orders/{param}</td><td class="c reachable" title="HTTP 404">reach</td><td class="c reachable" title="HTTP 404">reach</td></tr></tbody></table></div></section>
 
 <section><h2>Hidden surface</h2><div class="hidden-block"><h3>Hidden from <b>alice</b> <span class="role">user</span> (2)</h3><ul><li><code>GET /api/admin/users/{param}</code></li><li><code>GET /api/admin/users</code></li></ul></div></section>
 <section><h2>Sibling-oracle applicability</h2>
@@ -86,18 +91,20 @@ code{font-family:ui-monospace,Menlo,monospace}
 <section><h2>Confirmed authorization breaks</h2>
   <p class="sub">Each BOLA proven by the app's own sibling endpoint (its own statement of ownership), with controls holding in the same run. No tuned response-diff, no LLM in the decision path.</p>
   <div class="chain unconfirmed">
-    <div class="chain-head"><code>GET /api/admin/users/{param}</code> <span class="tag muted">NOT CONFIRMED</span></div>
-    <div class="flow"><div class="step actor">attacker<br><b>alice</b></div><div class="arrow">&rarr;</div><div class="step muted">GET /api/admin/users/id<br>-> object returned</div><div class="arrow">&rarr;</div><div class="step muted">sibling says<br>owner = <b>bob</b></div><div class="arrow">&rarr;</div><div class="step muted">controls hold<br>own + nonexistent<br>reproduced 0/3</div><div class="arrow">&rarr;</div><div class="step muted">not<br>confirmed</div></div>
+    <div class="chain-head"><code>GET /api/admin/users/{param}</code> <span class="tag muted">INAPPLICABLE</span></div>
+    <div class="flow"><div class="step actor">attacker<br><b>alice</b></div><div class="arrow">&rarr;</div><div class="step muted">GET /api/admin/users/id<br>-> object returned</div><div class="arrow">&rarr;</div><div class="step muted">sibling says<br>owner = <b>bob</b></div><div class="arrow">&rarr;</div><div class="step muted">controls hold<br>own + nonexistent</div><div class="arrow">&rarr;</div><div class="step muted">not<br>confirmed</div></div>
     
-    <p class="reason">No sibling contradiction with controls held.</p></div><div class="chain confirmed">
+    
+    <p class="reason">Oracle inapplicable: sibling /api/admin/users returned non-JSON/non-2xx for alice (session likely invalid or endpoint not a JSON list).</p></div><div class="chain confirmed">
     <div class="chain-head"><code>GET /api/orders/{param}</code> <span class="tag crit">CONFIRMED</span></div>
     <div class="flow"><div class="step actor">attacker<br><b>alice</b></div><div class="arrow">&rarr;</div><div class="step good">GET /api/orders/2001<br>-> object returned</div><div class="arrow">&rarr;</div><div class="step good">sibling says<br>owner = <b>bob</b></div><div class="arrow">&rarr;</div><div class="step good">controls hold<br>own + nonexistent<br>reproduced 3/3</div><div class="arrow">&rarr;</div><div class="step verdict">CONFIRMED<br>BOLA</div></div>
+    <div class="tape"><div class="tape-h">Oracle tape (every gate observed, the verdict is their fold)</div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">sibling attributes id 2001 to bob, not alice</span><span class="go">2001</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">alice GET(2001) returns a real object 3/3</span><span class="go">3/3 @ 200</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the attacker&#39;s object equals the record the victim legitimately sees</span><span class="go">equal</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">alice GET(own id 1001) authorized</span><span class="go">200</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">catch-all ruled out (format-valid unowned id is not served)</span><span class="go">404</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the object&#39;s own &#39;owner&#39; names bob, not alice</span><span class="go">owner=bob</span></div></div>
     <div class="received"><div class="received-h">Data <b>alice</b> received that belongs to <b>bob</b>:</div><pre>{
   &quot;id&quot;: 2001,
   &quot;owner&quot;: &quot;bob&quot;,
   &quot;item&quot;: &quot;Monitor&quot;,
   &quot;total&quot;: 300
 }</pre></div>
-    <p class="reason">alice retrieved orders 2001, which /api/me/orders attributes to bob and not to alice, a contradiction in the app&#39;s own authorization reproduced 3/3 times, with own-id=200 and nonexistent=404 controls holding.</p></div></section>
-<footer>Generated by Aperta 2026-10-17 &middot; deterministic, no LLM in the decision path &middot; <code>github.com/nyxragon/Aperta</code></footer>
+    <p class="reason">alice retrieved orders 2001, the SAME record /api/me/orders and the object endpoint give bob, reproduced 3/3 with own-id=200 and nonexistent (2001000) not-200 controls holding. A cross-user data contradiction in the app&#39;s own authorization.</p></div></section>
+<footer>Generated by Aperta 2026-11-03 &middot; deterministic, no LLM in the decision path &middot; <code>github.com/nyxragon/Aperta</code></footer>
 </div></body></html>

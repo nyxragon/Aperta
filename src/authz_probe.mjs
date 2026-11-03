@@ -17,6 +17,13 @@
 
 const GATED = new Set([401, 403]);
 
+// State-changing verbs. By default Aperta NEVER fires these at a live target: the diff only needs
+// to know whether an identity is authorized to reach the endpoint, and a real POST/PUT/PATCH/DELETE
+// can create/modify/delete data (CLAUDE.md hard limit: no exploitation that changes state). For a
+// state-changing endpoint we substitute a non-mutating OPTIONS probe unless the caller opts in with
+// `unsafe:true` (CLI --unsafe), which they should do only on a lab / with explicit authorization.
+const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 // ---- gating model ----------------------------------------------------------------------
 // By default an authorization DENY is a 401/403. But many apps (enterprise Java, ZOHO/AdventNet,
 // most SPAs) never return those: they deny by REDIRECTING to a login page (302 -> /login) or by
@@ -35,6 +42,7 @@ export function buildGatingOpts(opts = {}) {
     gatedRedirect: opts.gatedRedirect || null,
     denyMarker: opts.denyMarker || null,
     contentMarker: opts.contentMarker || null,
+    unsafe: !!opts.unsafe, // when false (default), state-changing verbs are NEVER fired live
   };
 }
 
@@ -232,10 +240,13 @@ export async function authzDiff(baseURL, endpoints, sessions, defaultApiBase = "
         row.meta[s.name] = {};
         row.source[s.name] = "observed";
       } else {
-        const r = await probe(baseURL, e.method, cp, s.headers || {}, needBody);
+        // SAFETY: never fire a state-changing verb live unless the caller opted into --unsafe.
+        let probeMethod = e.method, substituted = false;
+        if (STATE_CHANGING.has(e.method) && !opts.unsafe) { probeMethod = "OPTIONS"; substituted = true; }
+        const r = await probe(baseURL, probeMethod, cp, s.headers || {}, needBody);
         row.status[s.name] = r.status;
-        row.meta[s.name] = { location: r.location, body: r.body };
-        row.source[s.name] = "probed";
+        row.meta[s.name] = { location: r.location, body: r.body, probedMethod: probeMethod, substituted };
+        row.source[s.name] = substituted ? "probed-safe" : "probed";
       }
     }
     rows.push(row);
@@ -259,6 +270,10 @@ export async function authzDiff(baseURL, endpoints, sessions, defaultApiBase = "
     perSession[s.name] = { role: s.role, base: ctx[s.name].base, reachable, gated, hidden };
   }
   const warnings = computeWarnings(rows, sessions, perSession, opts);
+  const substituted = rows.filter((r) => Object.values(r.meta).some((m) => m && m.substituted)).length;
+  if (substituted && !opts.unsafe) {
+    warnings.push(`${substituted} state-changing endpoint(s) were probed read-only (OPTIONS) for safety; their reachability is approximate. Re-run with --unsafe on an authorized lab to probe the real verb.`);
+  }
   return { matrix: rows, perSession, warnings };
 }
 
