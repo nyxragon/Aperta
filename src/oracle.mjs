@@ -15,6 +15,22 @@
 // This refuses the "id-echo / existence stub" false positive, where an endpoint returns {id:<echo>}
 // for any well-formed id with no real record behind it.
 
+import { createHash } from "node:crypto";
+
+// A stable fingerprint of a verdict over its DECISION inputs only (verdict, endpoint, identities,
+// sourced foreign id, reproduction count, and every gate's id+pass), excluding volatile bytes/timing.
+// Re-running the oracle against the same target yields the SAME hash: that is the determinism claim,
+// made checkable (aperta prove --replay). Works for any oracle result that carries a `gates` array.
+export function verdictHash(res) {
+  const key = {
+    verdict: res.verdict, endpoint: res.endpoint, attacker: res.attacker, victim: res.victim,
+    foreign: res.evidence?.foreign_id_tested ?? res.evidence?.foreign_count ?? null,
+    reproductions: res.evidence?.reproductions ?? null,
+    gates: (res.gates || []).map((g) => [g.id, g.pass === true]),
+  };
+  return "sha256:" + createHash("sha256").update(canonical(key)).digest("hex").slice(0, 16);
+}
+
 const OWNER_KEYS = ["owner", "ownerId", "owner_id", "userId", "user_id", "accountId", "account_id",
   "account", "tenantId", "tenant_id", "tenant", "orgId", "org_id", "org", "createdBy", "created_by", "user"];
 const COLLECTION_WRAPPERS = ["results", "items", "data", "nodes", "list", "records", "rows", "content"];
@@ -366,6 +382,12 @@ function selfTest() {
   check(detectSharing({ id: 1, collaborators: ["alice"] }, "alice") !== null, "attacker in collaborators is a sharing signal");
   check(detectSharing({ id: 1, collaborators: ["carol"] }, "alice") === null, "attacker NOT in collaborators -> still a break (no signal)");
   check(detectSharing({ id: 1, owner: "bob", visibility: "private" }) === null, "a private owned object has no sharing signal");
+
+  // verdictHash: stable over decision inputs, changes with the verdict
+  const vr = { verdict: "CONFIRMED", endpoint: "/api/orders/{param}", attacker: "a", victim: "b", gates: [{ id: "g1", pass: true }], evidence: { foreign_id_tested: "2001", reproductions: "3/3" } };
+  check(verdictHash(vr) === verdictHash({ ...vr }), "verdictHash is identical for the same decision (determinism)");
+  check(verdictHash(vr) !== verdictHash({ ...vr, verdict: "NOT-CONFIRMED" }), "verdictHash changes when the verdict changes");
+  check(/^sha256:[0-9a-f]{16}$/.test(verdictHash(vr)), "verdictHash is a short sha256 tag");
 
   console.log(`oracle self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

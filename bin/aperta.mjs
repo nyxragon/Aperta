@@ -10,7 +10,7 @@ import { endpointsFromHar, endpointsFromList, sourcesFromSourceMap, chunksFromMa
 import { verifyEndpoints, verifyLine } from "../src/verify.mjs";
 import { authzDiff, hiddenToJSONL } from "../src/authz_probe.mjs";
 import { buildSession } from "../src/session_import.mjs";
-import { siblingOracleBOLA } from "../src/oracle.mjs";
+import { siblingOracleBOLA, verdictHash } from "../src/oracle.mjs";
 import { collectionOverReturnBOLA } from "../src/oracle_collection.mjs";
 import { graphqlOracleBOLA } from "../src/oracle_graphql.mjs";
 import { discoverOracles, applicabilityLine } from "../src/oracle_discovery.mjs";
@@ -188,6 +188,33 @@ async function cmdProve() {
   const format = opt("--format", "json");
   if (!base) throw new Error("--base required");
 
+  // --replay N: re-run the oracle N times and prove the verdict hash is byte-identical every run
+  // (the determinism claim as a live artifact; a mismatch exits 2, a real nondeterminism regression).
+  // --assert-scoped: CI gate - exit 0 only if the endpoint is PROVEN correctly-scoped; a CONFIRMED
+  // break is an authz regression (exit 3); anything else is "not asserted" (exit 1).
+  const replayN = Math.max(1, parseInt(opt("--replay", "1"), 10) || 1);
+  const assertScoped = args.includes("--assert-scoped");
+  async function emitProve(res, remake) {
+    res.verdictHash = verdictHash(res);
+    if (replayN > 1 && remake) {
+      const hashes = [res.verdictHash];
+      for (let i = 1; i < replayN; i++) hashes.push(verdictHash(await remake()));
+      const identical = hashes.every((h) => h === res.verdictHash);
+      res.determinism = { runs: replayN, verdictHash: res.verdictHash, identical };
+      if (!identical) console.error(`DETERMINISM FAILURE: verdict hash varied across ${replayN} runs (${[...new Set(hashes)].join(" vs ")})`);
+    }
+    if (format === "sarif") console.log(JSON.stringify(toSARIF({ bolas: [res] }), null, 2));
+    else if (format === "nuclei") { if (res.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); } console.log(toNucleiTemplate(res)); }
+    else console.log(JSON.stringify(res, null, 2));
+    if (res.determinism && !res.determinism.identical) process.exit(2);
+    if (assertScoped) {
+      if (res.verdict === "CORRECTLY-SCOPED") process.exit(0);
+      if (res.verdict === "CONFIRMED") { console.error("ASSERT-SCOPED FAILED: endpoint is CONFIRMED vulnerable (authz regression)"); process.exit(3); }
+      console.error(`ASSERT-SCOPED: not asserted (verdict ${res.verdict}; needs two identities + a reachable object to prove scoping)`); process.exit(1);
+    }
+    process.exit(res.verdict === "CONFIRMED" ? 0 : 1);
+  }
+
   // --auto: discover candidate (object, sibling) pairs from the reconstructed surface and prove each,
   // instead of hand-specifying --object/--sibling/--collection.
   if (args.includes("--auto")) {
@@ -212,15 +239,9 @@ async function cmdProve() {
     const siblingPath = opt("--sibling");
     const collection = opt("--collection");
     if (!collectionPath || !siblingPath || !collection) throw new Error("--collection-overreturn needs --collection-list <bare path> --sibling <self-scoped path> --collection <name>");
-    const victimF = opt("--victim");
-    const cr = await collectionOverReturnBOLA(base, {
-      collectionPath, siblingPath, collection, idKey, ownerKey: opt("--owner-key"),
-      attacker, victim: victimF ? victim : undefined,
-    });
-    if (format === "sarif") console.log(JSON.stringify(toSARIF({ bolas: [cr] }), null, 2));
-    else if (format === "nuclei") { if (cr.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); } console.log(toNucleiTemplate(cr)); }
-    else console.log(JSON.stringify(cr, null, 2));
-    process.exit(cr.verdict === "CONFIRMED" ? 0 : 1);
+    const ownerKey = opt("--owner-key");
+    const mk = () => collectionOverReturnBOLA(base, { collectionPath, siblingPath, collection, idKey, ownerKey, attacker, victim: victim || undefined });
+    return emitProve(await mk(), mk);
   }
 
   // --graphql: the sibling oracle over GraphQL global-ids (node(id:)/typed-by-id queries).
@@ -234,11 +255,8 @@ async function cmdProve() {
       throw new Error("--graphql needs --object-query --object-path --sibling-query --collection-path");
     }
     needVictim();
-    const gres = await graphqlOracleBOLA(base, { endpoint, objectQuery, objectPath, siblingQuery, collectionPath, idField: idKey, attacker, victim });
-    if (format === "sarif") console.log(JSON.stringify(toSARIF({ bolas: [gres] }), null, 2));
-    else if (format === "nuclei") { if (gres.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); } console.log(toNucleiTemplate(gres)); }
-    else console.log(JSON.stringify(gres, null, 2));
-    process.exit(gres.verdict === "CONFIRMED" ? 0 : 1);
+    const mk = () => graphqlOracleBOLA(base, { endpoint, objectQuery, objectPath, siblingQuery, collectionPath, idField: idKey, attacker, victim });
+    return emitProve(await mk(), mk);
   }
 
   const objectTemplate = opt("--object");
@@ -248,16 +266,8 @@ async function cmdProve() {
     throw new Error("--object <tmpl> --sibling <path> --collection <name> required (or --auto, --graphql, or --collection-overreturn)");
   }
   needVictim();
-  const res = await siblingOracleBOLA(base, { objectTemplate, siblingPath, collection, idKey, attacker, victim });
-  if (format === "nuclei") {
-    if (res.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); }
-    console.log(toNucleiTemplate(res));
-  } else if (format === "sarif") {
-    console.log(JSON.stringify(toSARIF({ bolas: [res] }), null, 2));
-  } else {
-    console.log(JSON.stringify(res, null, 2));
-  }
-  if (res.verdict !== "CONFIRMED") process.exit(1);
+  const mk = () => siblingOracleBOLA(base, { objectTemplate, siblingPath, collection, idKey, attacker, victim });
+  return emitProve(await mk(), mk);
 }
 
 function cmdIngest() {

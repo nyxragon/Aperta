@@ -8,6 +8,7 @@
 //     controls (own=200, missing=404) -> CONFIRMED.
 // Zero external dependencies (inline CSS, no CDN, works air-gapped). Every target-derived string is
 // HTML-escaped: endpoint paths come from the target bundle and are untrusted input.
+import { verdictHash } from "./oracle.mjs";
 
 function esc(s) {
   return String(s ?? "")
@@ -103,8 +104,9 @@ function bolaChain(b) {
       `<span class="gl">${esc(g.label)}</span><span class="go">${esc(String(g.observed))}</span></div>`).join("");
     tape = `<div class="tape"><div class="tape-h">Oracle tape (every gate observed, the verdict is their fold)</div>${rows}</div>`;
   }
+  const vh = b.verdictHash || (ok ? verdictHash(b) : null); // determinism badge: same verdict => same hash
   return `<div class="chain ${ok ? "confirmed" : "unconfirmed"}">
-    <div class="chain-head"><code>${esc(b.method || "GET")} ${esc(b.endpoint)}</code> <span class="tag ${ok ? "crit" : "muted"}">${esc(b.verdict || (ok ? "CONFIRMED" : "NOT CONFIRMED"))}</span></div>
+    <div class="chain-head"><code>${esc(b.method || "GET")} ${esc(b.endpoint)}</code> <span class="tag ${ok ? "crit" : "muted"}">${esc(b.verdict || (ok ? "CONFIRMED" : "NOT CONFIRMED"))}</span>${vh ? ` <span class="hash" title="deterministic verdict hash: identical on every run">${esc(vh)}</span>` : ""}</div>
     <div class="flow">${flow}</div>
     ${tape}
     ${received}
@@ -215,6 +217,7 @@ td.c{font-weight:700;font-size:11px;letter-spacing:.03em}
 .chain-head{display:flex;align-items:center;gap:10px;font-family:ui-monospace,Menlo,monospace;font-size:13px;margin-bottom:10px;flex-wrap:wrap}
 .tag{font-family:ui-sans-serif,system-ui;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px}
 .tag.crit{background:var(--hide-bg);color:var(--crit)}.tag.muted{background:var(--unknown-bg);color:var(--unknown)}
+.hash{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--sub);background:var(--unknown-bg);padding:2px 6px;border-radius:6px}
 .flow{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
 .step{flex:1;min-width:120px;background:var(--unknown-bg);border-radius:8px;padding:10px;font-size:12px;text-align:center;line-height:1.35;display:flex;align-items:center;justify-content:center}
 .step.actor{background:var(--card);border:1px solid var(--line)}
@@ -282,6 +285,7 @@ function selfTest() {
   check(html.includes("Hidden from <b>alice</b>"), "hidden surface for alice");
   check(html.includes("CONFIRMED<br>BOLA"), "confirmed BOLA chain rendered");
   check(html.includes("received that belongs to") && html.includes("Monitor"), "received cross-user data shown as evidence");
+  check(/sha256:[0-9a-f]{16}/.test(html), "confirmed chain shows the deterministic verdict hash");
   // a non-confirmed prove must NOT appear under the "Confirmed" heading, nor show affirmative steps
   const inapp = { verdict: "INAPPLICABLE", method: "GET", endpoint: "/api/admin/users/{param}", attacker: "alice", victim: "bob", reason: "Oracle inapplicable: alice cannot read the admin sibling.", evidence: {} };
   const mixed = toHTMLReport({ base: "x", model, diff, discovery, proves: [prove, inapp], findings });

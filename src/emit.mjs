@@ -52,6 +52,21 @@ const BOLA_RULE = {
   properties: { tags: ["security", "access-control", "BOLA", "IDOR"], "security-severity": "8.1" },
 };
 
+const SCOPED_RULE = {
+  id: "aperta/scoped-authz-verified",
+  name: "ScopedAuthorizationVerified",
+  shortDescription: { text: "Object-level authorization deterministically verified (earned negative)" },
+  fullDescription: {
+    text:
+      "Aperta proved this endpoint enforces object-level authorization: a known victim-owned object " +
+      "exists and is denied to the attacker on every attempt, while the attacker's own object is " +
+      "served and a nonexistent id is not. Pin this as a CI baseline and fail the build if it later " +
+      "flips to a confirmed break.",
+  },
+  defaultConfiguration: { level: "note" },
+  properties: { tags: ["security", "access-control", "authorization", "regression-baseline"], "security-severity": "0.0" },
+};
+
 const BFLA_RULE = {
   id: "aperta/broken-function-level-authz",
   name: "BrokenFunctionLevelAuthorization",
@@ -105,15 +120,27 @@ export function toSARIF({ diff = null, session = null, bolas = [], findings = nu
   }
 
   for (const b of bolas) {
-    if (b.verdict !== "CONFIRMED") continue;
-    if (!rules.find((r) => r.id === BOLA_RULE.id)) rules.push(BOLA_RULE);
-    results.push({
-      ruleId: BOLA_RULE.id,
-      level: "error",
-      message: { text: b.reason || `Confirmed BOLA in ${b.endpoint || "object endpoint"} via the sibling-endpoint oracle.` },
-      locations: [{ logicalLocations: [{ fullyQualifiedName: b.endpoint, kind: "member" }] }],
-      properties: { class: "BOLA", attacker: b.attacker, victim: b.victim, oracle: b.oracle },
-    });
+    if (b.verdict === "CONFIRMED") {
+      if (!rules.find((r) => r.id === BOLA_RULE.id)) rules.push(BOLA_RULE);
+      results.push({
+        ruleId: BOLA_RULE.id,
+        level: "error",
+        message: { text: b.reason || `Confirmed BOLA in ${b.endpoint || "object endpoint"} via the sibling-endpoint oracle.` },
+        locations: [{ logicalLocations: [{ fullyQualifiedName: b.endpoint, kind: "member" }] }],
+        properties: { class: "BOLA", attacker: b.attacker, victim: b.victim, oracle: b.oracle },
+      });
+    } else if (b.verdict === "CORRECTLY-SCOPED") {
+      // a deterministic POSITIVE assertion: the app PROVED it enforces object-level authz here. Useful
+      // as a CI regression baseline (fail the build if this endpoint later flips to CONFIRMED).
+      if (!rules.find((r) => r.id === SCOPED_RULE.id)) rules.push(SCOPED_RULE);
+      results.push({
+        ruleId: SCOPED_RULE.id,
+        level: "note",
+        message: { text: b.reason || `Object-level authorization verified at ${b.endpoint}: the attacker is denied the victim's object while own-id works.` },
+        locations: [{ logicalLocations: [{ fullyQualifiedName: b.endpoint, kind: "member" }] }],
+        properties: { class: "scoped-authz-verified", attacker: b.attacker, victim: b.victim, oracle: b.oracle },
+      });
+    }
   }
 
   return {
@@ -220,6 +247,11 @@ function selfTest() {
   check(s.runs[0].results.find((r) => r.ruleId === "aperta/confirmed-bola").level === "error", "BOLA is error-level");
   const sNoReason = toSARIF({ bolas: [{ verdict: "CONFIRMED", endpoint: "/api/x/{param}" }] });
   check(typeof sNoReason.runs[0].results[0].message.text === "string" && sNoReason.runs[0].results[0].message.text.length > 0, "SARIF result always has message.text (schema-required) even without a reason");
+  // CORRECTLY-SCOPED emits a positive note-level result (the CI regression baseline), not an error
+  const sScoped = toSARIF({ bolas: [{ verdict: "CORRECTLY-SCOPED", endpoint: "/api/orders/{param}", reason: "enforced" }] });
+  const scopedRes = sScoped.runs[0].results.find((r) => r.ruleId === "aperta/scoped-authz-verified");
+  check(scopedRes && scopedRes.level === "note", "CORRECTLY-SCOPED -> note-level scoped-authz-verified result");
+  check(!sScoped.runs[0].results.some((r) => r.level === "error"), "a correctly-scoped verdict is NOT emitted as an error/finding");
   check(JSON.parse(JSON.stringify(s)), "SARIF is JSON-serializable");
 
   const tpl = toNucleiTemplate(bola);
