@@ -40,6 +40,7 @@ td.c{font-weight:700;font-size:11px;letter-spacing:.03em}
 .pairs{font-size:13px}.pairs th,.pairs td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left}
 .conf.high{color:var(--good);font-weight:700}.conf.medium{color:var(--gate);font-weight:600}.conf.none{color:var(--unknown)}
 .none{color:var(--unknown)}
+.muted-cell{color:var(--sub);font-size:12px}
 .bar{position:relative;background:var(--unknown-bg);border-radius:8px;height:30px;margin:6px 0 16px;overflow:hidden}
 .bar .fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--accent),var(--good));opacity:.25}
 .bar span{position:relative;display:block;line-height:30px;padding:0 12px;font-size:12px;font-weight:600}
@@ -90,21 +91,18 @@ code{font-family:ui-monospace,Menlo,monospace}
     <td class="conf high">high</td></tr></tbody></table></section>
 <section><h2>Confirmed authorization breaks</h2>
   <p class="sub">Each BOLA proven by the app's own sibling endpoint (its own statement of ownership), with controls holding in the same run. No tuned response-diff, no LLM in the decision path.</p>
-  <div class="chain unconfirmed">
-    <div class="chain-head"><code>GET /api/admin/users/{param}</code> <span class="tag muted">INAPPLICABLE</span></div>
-    <div class="flow"><div class="step actor">attacker<br><b>alice</b></div><div class="arrow">&rarr;</div><div class="step muted">GET /api/admin/users/id<br>-> object returned</div><div class="arrow">&rarr;</div><div class="step muted">sibling says<br>owner = <b>bob</b></div><div class="arrow">&rarr;</div><div class="step muted">controls hold<br>own + nonexistent</div><div class="arrow">&rarr;</div><div class="step muted">not<br>confirmed</div></div>
-    
-    
-    <p class="reason">Oracle inapplicable: sibling /api/admin/users returned non-JSON/non-2xx for alice (session likely invalid or endpoint not a JSON list).</p></div><div class="chain confirmed">
+  <div class="chain confirmed">
     <div class="chain-head"><code>GET /api/orders/{param}</code> <span class="tag crit">CONFIRMED</span></div>
     <div class="flow"><div class="step actor">attacker<br><b>alice</b></div><div class="arrow">&rarr;</div><div class="step good">GET /api/orders/2001<br>-> object returned</div><div class="arrow">&rarr;</div><div class="step good">sibling says<br>owner = <b>bob</b></div><div class="arrow">&rarr;</div><div class="step good">controls hold<br>own + nonexistent<br>reproduced 3/3</div><div class="arrow">&rarr;</div><div class="step verdict">CONFIRMED<br>BOLA</div></div>
-    <div class="tape"><div class="tape-h">Oracle tape (every gate observed, the verdict is their fold)</div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">sibling attributes id 2001 to bob, not alice</span><span class="go">2001</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">alice GET(2001) returns a real object 3/3</span><span class="go">3/3 @ 200</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the attacker&#39;s object equals the record the victim legitimately sees</span><span class="go">equal</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">alice GET(own id 1001) authorized</span><span class="go">200</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">catch-all ruled out (format-valid unowned id is not served)</span><span class="go">404</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the object&#39;s own &#39;owner&#39; names bob, not alice</span><span class="go">owner=bob</span></div></div>
+    <div class="tape"><div class="tape-h">Oracle tape (every gate observed, the verdict is their fold)</div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">sibling attributes id 2001 to bob, not alice</span><span class="go">2001</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">alice GET(2001) returns a real object 3/3</span><span class="go">3/3 @ 200</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the attacker&#39;s object equals the record the victim legitimately sees</span><span class="go">equal</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">alice GET(own id 1001) authorized</span><span class="go">200</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">catch-all ruled out (format-valid unowned id is not served)</span><span class="go">404</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the object is not shared/public to the attacker (would be legitimate access)</span><span class="go">none</span></div><div class="gate ok"><span class="gi">&#10003;</span><span class="gl">the object&#39;s own &#39;owner&#39; names bob, not alice</span><span class="go">owner=bob</span></div></div>
     <div class="received"><div class="received-h">Data <b>alice</b> received that belongs to <b>bob</b>:</div><pre>{
   &quot;id&quot;: 2001,
   &quot;owner&quot;: &quot;bob&quot;,
   &quot;item&quot;: &quot;Monitor&quot;,
   &quot;total&quot;: 300
 }</pre></div>
-    <p class="reason">alice retrieved orders 2001, the SAME record /api/me/orders and the object endpoint give bob, reproduced 3/3 with own-id=200 and nonexistent (2001000) not-200 controls holding. A cross-user data contradiction in the app&#39;s own authorization.</p></div></section>
+    <p class="reason">alice retrieved orders 2001, the SAME record /api/me/orders and the object endpoint give bob, reproduced 3/3 with own-id=200 and nonexistent (2001000) not-200 controls holding. A cross-user data contradiction in the app&#39;s own authorization.</p></div></section><section><h2>Attempted, not confirmed</h2>
+  <p class="sub">These candidate pairs were probed but did NOT meet the confirmation gates. They are leads, not findings, and nothing here reached another user's data.</p>
+  <div class="scroll"><table class="pairs"><thead><tr><th>endpoint</th><th>verdict</th><th>why not</th></tr></thead><tbody><tr><td><code>GET /api/admin/users/{param}</code></td><td><span class="tag muted">INAPPLICABLE</span></td><td class="muted-cell">Oracle inapplicable: sibling /api/admin/users returned non-JSON/non-2xx for alice (session likely invalid or endpoint not a JSON list).</td></tr></tbody></table></div></section>
 <footer>Generated by Aperta 2026-11-03 &middot; deterministic, no LLM in the decision path &middot; <code>github.com/nyxragon/Aperta</code></footer>
 </div></body></html>

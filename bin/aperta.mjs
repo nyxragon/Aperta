@@ -11,6 +11,7 @@ import { verifyEndpoints, verifyLine } from "../src/verify.mjs";
 import { authzDiff, hiddenToJSONL } from "../src/authz_probe.mjs";
 import { buildSession } from "../src/session_import.mjs";
 import { siblingOracleBOLA } from "../src/oracle.mjs";
+import { collectionOverReturnBOLA } from "../src/oracle_collection.mjs";
 import { graphqlOracleBOLA } from "../src/oracle_graphql.mjs";
 import { discoverOracles, applicabilityLine } from "../src/oracle_discovery.mjs";
 import { probeBypasses } from "../src/bypass.mjs";
@@ -180,7 +181,9 @@ async function cmdProve() {
   // prove a BOLA via the sibling-endpoint oracle. Sessions = caller-supplied auth (no login).
   const base = opt("--base");
   const attacker = JSON.parse(readFileSync(opt("--attacker"), "utf8"));
-  const victim = JSON.parse(readFileSync(opt("--victim"), "utf8"));
+  const victimF = opt("--victim");
+  const victim = victimF ? JSON.parse(readFileSync(victimF, "utf8")) : null; // optional (over-return can run with one identity)
+  const needVictim = () => { if (!victim) throw new Error("--victim <f.json> required for this oracle"); };
   const idKey = opt("--id-key", "id");
   const format = opt("--format", "json");
   if (!base) throw new Error("--base required");
@@ -188,6 +191,7 @@ async function cmdProve() {
   // --auto: discover candidate (object, sibling) pairs from the reconstructed surface and prove each,
   // instead of hand-specifying --object/--sibling/--collection.
   if (args.includes("--auto")) {
+    needVictim();
     const disc = discoverOracles(loadModel());
     const candidates = disc.pairs.filter((p) => p.best);
     console.error(applicabilityLine(disc) + `; proving ${candidates.length} candidate(s)`);
@@ -202,6 +206,23 @@ async function cmdProve() {
     process.exit(results.some((r) => r.verdict === "CONFIRMED") ? 0 : 1);
   }
 
+  // --collection-overreturn: prove an unscoped collection list over-returns other users' rows.
+  if (args.includes("--collection-overreturn")) {
+    const collectionPath = opt("--collection-list");
+    const siblingPath = opt("--sibling");
+    const collection = opt("--collection");
+    if (!collectionPath || !siblingPath || !collection) throw new Error("--collection-overreturn needs --collection-list <bare path> --sibling <self-scoped path> --collection <name>");
+    const victimF = opt("--victim");
+    const cr = await collectionOverReturnBOLA(base, {
+      collectionPath, siblingPath, collection, idKey, ownerKey: opt("--owner-key"),
+      attacker, victim: victimF ? victim : undefined,
+    });
+    if (format === "sarif") console.log(JSON.stringify(toSARIF({ bolas: [cr] }), null, 2));
+    else if (format === "nuclei") { if (cr.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); } console.log(toNucleiTemplate(cr)); }
+    else console.log(JSON.stringify(cr, null, 2));
+    process.exit(cr.verdict === "CONFIRMED" ? 0 : 1);
+  }
+
   // --graphql: the sibling oracle over GraphQL global-ids (node(id:)/typed-by-id queries).
   if (args.includes("--graphql")) {
     const endpoint = opt("--endpoint", "/graphql");
@@ -212,6 +233,7 @@ async function cmdProve() {
     if (!objectQuery || !objectPath || !siblingQuery || !collectionPath) {
       throw new Error("--graphql needs --object-query --object-path --sibling-query --collection-path");
     }
+    needVictim();
     const gres = await graphqlOracleBOLA(base, { endpoint, objectQuery, objectPath, siblingQuery, collectionPath, idField: idKey, attacker, victim });
     if (format === "sarif") console.log(JSON.stringify(toSARIF({ bolas: [gres] }), null, 2));
     else if (format === "nuclei") { if (gres.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); } console.log(toNucleiTemplate(gres)); }
@@ -223,8 +245,9 @@ async function cmdProve() {
   const siblingPath = opt("--sibling");
   const collection = opt("--collection");
   if (!objectTemplate || !siblingPath || !collection) {
-    throw new Error("--object <tmpl> --sibling <path> --collection <name> required (or --auto with --js/--surface, or --graphql)");
+    throw new Error("--object <tmpl> --sibling <path> --collection <name> required (or --auto, --graphql, or --collection-overreturn)");
   }
+  needVictim();
   const res = await siblingOracleBOLA(base, { objectTemplate, siblingPath, collection, idKey, attacker, victim });
   if (format === "nuclei") {
     if (res.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); }
@@ -374,6 +397,7 @@ THE ONE PATH (everything else is a helper for one of these):
        manual:  --object "/api/orders/{param}" --sibling "/api/me/orders" --collection orders
        auto:    --auto (--surface|--js ...)        discover + prove every candidate pair
        graphql: --graphql --object-query <q> --object-path <p> --sibling-query <q> --collection-path <p>
+       list:    --collection-overreturn --collection-list "/api/orders" --sibling "/api/me/orders" --collection orders
 
 HELPERS:
   aperta fingerprint <jsDirOrFile>                           which framework (picks the MAP lens)

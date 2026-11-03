@@ -136,7 +136,7 @@ export function detectOwnerKey(body) {
   if (!body || typeof body !== "object") return null;
   return OWNER_KEYS.find((k) => body[k] != null) || null;
 }
-function constOwnerValue(objects, key) {
+export function constOwnerValue(objects, key) {
   if (!key) return null;
   const vals = new Set(objects
     .map((o) => (o[key] != null && typeof o[key] !== "object" ? String(o[key]) : null)) // scalar owners only
