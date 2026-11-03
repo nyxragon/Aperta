@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { reconstruct, fingerprint } from "./reconstruct.mjs";
 import { authzDiff, hiddenToJSONL } from "./authz_probe.mjs";
 import { siblingOracleBOLA } from "./oracle.mjs";
+import { graphqlOracleBOLA } from "./oracle_graphql.mjs";
+import { collectionOverReturnBOLA } from "./oracle_collection.mjs";
 import { discoverOracles, applicabilityLine } from "./oracle_discovery.mjs";
 import { classifyFindings } from "./authz_matrix.mjs";
 import { toHTMLReport } from "./report.mjs";
@@ -56,19 +58,29 @@ const TOOLS = [
   },
   {
     name: "aperta_prove",
-    description: "Prove a BOLA deterministically via the app's own sibling endpoint as the oracle. CONFIRMED means the attacker retrieved an object the sibling attributes to the victim, with own-id=200 and nonexistent=404 controls holding. Returns the verdict + evidence and a nuclei template for a confirmed finding.",
+    description: "Prove a BOLA deterministically using the app's own endpoints as the oracle. mode: 'sibling' (per-object GET /x/{id}, default), 'auto' (discover every object+sibling pair from a surface and prove each), 'graphql' (opaque global-id oracle, otherwise UNREACHABLE over MCP), 'overreturn' (an unscoped collection list leaking other users' rows). A CONFIRMED result carries the gate tape + a nuclei template path; reportable is true ONLY for CONFIRMED (never promote a NOT-CONFIRMED / CORRECTLY-SCOPED / INAPPLICABLE).",
     inputSchema: {
       type: "object",
       properties: {
         base: { type: "string" },
-        object: { type: "string", description: 'object endpoint template, e.g. "/api/orders/{param}"' },
-        sibling: { type: "string", description: 'owner-filtered sibling, e.g. "/api/me/orders"' },
-        collection: { type: "string", description: "JSON key holding the array in the sibling response" },
+        mode: { type: "string", enum: ["sibling", "auto", "graphql", "overreturn"], default: "sibling" },
+        object: { type: "string", description: 'sibling mode: object endpoint template, e.g. "/api/orders/{param}"' },
+        sibling: { type: "string", description: 'sibling/overreturn mode: owner-filtered list, e.g. "/api/me/orders"' },
+        collection: { type: "string", description: "JSON key (or dot path via collectionPath) holding the array" },
+        collectionList: { type: "string", description: 'overreturn mode: the bare (unscoped) list path, e.g. "/api/orders"' },
+        ownerKey: { type: "string", description: "overreturn mode: owner/tenant field name (auto-detected if omitted)" },
         idKey: { type: "string", default: "id" },
+        surfacePath: { type: "string", description: "auto mode: a reconstruct --format json artifact" },
+        jsPath: { type: "string", description: "auto mode: a bundle dir/file to reconstruct inline" },
+        endpoint: { type: "string", description: "graphql mode: the GraphQL endpoint (default /graphql)" },
+        objectQuery: { type: "string", description: "graphql mode: object-by-id query with an $id:ID! var" },
+        objectPath: { type: "string", description: "graphql mode: dot path to the object node in data" },
+        siblingQuery: { type: "string", description: "graphql mode: the caller's own-list query" },
+        collectionPath: { type: "string", description: "graphql mode: dot path to the caller's list in data" },
         attacker: { type: "object", description: "{name,headers} or a file path" },
-        victim: { type: "object", description: "{name,headers} or a file path" },
+        victim: { type: "object", description: "{name,headers} or a file path (optional for overreturn)" },
       },
-      required: ["base", "object", "sibling", "collection", "attacker", "victim"],
+      required: ["base", "attacker"],
     },
   },
   {
@@ -138,15 +150,45 @@ async function callTool(name, a = {}) {
     };
   }
   if (name === "aperta_prove") {
-    const res = await siblingOracleBOLA(a.base, {
-      objectTemplate: a.object, siblingPath: a.sibling, collection: a.collection, idKey: a.idKey || "id",
-      attacker: asSession(a.attacker), victim: asSession(a.victim),
-    });
+    const mode = a.mode || "sibling";
+    const attacker = asSession(a.attacker);
+    const victim = a.victim ? asSession(a.victim) : null;
+    const idKey = a.idKey || "id";
     // reportable is the machine-readable contract: only a CONFIRMED verdict may be promoted to a
     // finding. A driving agent must never report a NOT-CONFIRMED / CORRECTLY-SCOPED / INAPPLICABLE.
-    const out = { verdict: res.verdict, reportable: res.reportable === true, class: res.class, endpoint: res.endpoint, oracle: res.oracle, gates: res.gates || [], reason: res.reason, evidence: res.evidence };
-    if (res.verdict === "CONFIRMED") out.nucleiTemplatePath = writeArtifact("aperta-bola.yaml", toNucleiTemplate(res));
-    return out;
+    const pack = (res) => {
+      const out = { verdict: res.verdict, reportable: res.reportable === true, class: res.class, subclass: res.subclass, endpoint: res.endpoint, oracle: res.oracle, gates: res.gates || [], reason: res.reason, evidence: res.evidence };
+      if (res.verdict === "CONFIRMED") out.nucleiTemplatePath = writeArtifact("aperta-bola.yaml", toNucleiTemplate(res));
+      return out;
+    };
+    if (mode === "auto") {
+      // discover candidate (object, sibling) pairs from a surface and prove each (the deterministic
+      // engine picks the pairs; the agent only supplies the two identities).
+      if (!victim) return { error: "auto mode needs a victim identity", reportable: false };
+      const model = a.surfacePath ? JSON.parse(readFileSync(a.surfacePath, "utf8")) : reconstruct(a.jsPath);
+      const disc = discoverOracles(model);
+      const results = [];
+      for (const c of disc.pairs.filter((p) => p.best)) {
+        results.push(await siblingOracleBOLA(a.base, { objectTemplate: c.objectTemplate, siblingPath: c.best, collection: c.collection, idKey, attacker, victim }));
+      }
+      const confirmed = results.filter((r) => r.verdict === "CONFIRMED");
+      return {
+        applicability: disc.applicability,
+        proved: results.map((r) => ({ endpoint: r.endpoint, verdict: r.verdict, reportable: r.reportable === true, gates: r.gates })),
+        confirmed: confirmed.length,
+        nucleiTemplatePaths: confirmed.map((r) => writeArtifact("aperta-bola.yaml", toNucleiTemplate(r))),
+      };
+    }
+    if (mode === "graphql") {
+      if (!victim) return { error: "graphql mode needs a victim identity", reportable: false };
+      return pack(await graphqlOracleBOLA(a.base, { endpoint: a.endpoint || "/graphql", objectQuery: a.objectQuery, objectPath: a.objectPath, siblingQuery: a.siblingQuery, collectionPath: a.collectionPath, idField: idKey, attacker, victim }));
+    }
+    if (mode === "overreturn") {
+      return pack(await collectionOverReturnBOLA(a.base, { collectionPath: a.collectionList, siblingPath: a.sibling, collection: a.collection, idKey, ownerKey: a.ownerKey, attacker, victim: victim || undefined }));
+    }
+    // default: the per-object sibling oracle
+    if (!victim) return { error: "sibling mode needs a victim identity", reportable: false };
+    return pack(await siblingOracleBOLA(a.base, { objectTemplate: a.object, siblingPath: a.sibling, collection: a.collection, idKey, attacker, victim }));
   }
   if (name === "aperta_oracles") {
     const model = a.surfacePath ? JSON.parse(readFileSync(a.surfacePath, "utf8")) : reconstruct(a.jsPath);
@@ -267,6 +309,13 @@ async function selfTest() {
   const orcPayload = JSON.parse(orc.result.content[0].text);
   check(orcPayload.applicability.withOracle === 1 && orcPayload.applicability.objectEndpoints === 1, "aperta_oracles computes applicability");
   check(orcPayload.artifactPath && !("matrix" in orcPayload), "aperta_oracles returns summary + artifact path");
+
+  // aperta_prove now exposes modes and the deterministic GraphQL oracle over MCP (was unreachable)
+  const prraw = list.result.tools.find((t) => t.name === "aperta_prove");
+  check(prraw.inputSchema.properties.mode && ["auto", "graphql", "overreturn"].every((m) => prraw.inputSchema.properties.mode.enum.includes(m)), "aperta_prove exposes auto/graphql/overreturn modes");
+  check(JSON.stringify(prraw.inputSchema.required) === JSON.stringify(["base", "attacker"]), "aperta_prove requires only base+attacker (the mode supplies the rest)");
+  const noVic = await dispatch({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "aperta_prove", arguments: { base: "http://127.0.0.1:0", mode: "auto", attacker: { name: "a", headers: {} } } } });
+  check(JSON.parse(noVic.result.content[0].text).error && /victim/.test(noVic.result.content[0].text), "auto mode without a victim is a clean error, not a crash");
 
   const bad = await dispatch({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "aperta_diff", arguments: { base: "x", sessions: [] } } });
   check(bad.result.isError, "tool error surfaced as isError result");
