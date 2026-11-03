@@ -16,7 +16,7 @@ import { graphqlOracleBOLA } from "../src/oracle_graphql.mjs";
 import { discoverOracles, applicabilityLine } from "../src/oracle_discovery.mjs";
 import { probeBypasses } from "../src/bypass.mjs";
 import { classifyFindings, findingsLine } from "../src/authz_matrix.mjs";
-import { toSARIF, toNucleiTemplate } from "../src/emit.mjs";
+import { toSARIF, toNucleiTemplate, toReproScript } from "../src/emit.mjs";
 import { toHTMLReport } from "../src/report.mjs";
 import { serve as serveMCP } from "../src/mcp.mjs";
 
@@ -205,6 +205,7 @@ async function cmdProve() {
     }
     if (format === "sarif") console.log(JSON.stringify(toSARIF({ bolas: [res] }), null, 2));
     else if (format === "nuclei") { if (res.verdict !== "CONFIRMED") { console.error("not confirmed, no template emitted"); process.exit(1); } console.log(toNucleiTemplate(res)); }
+    else if (format === "repro") { if (res.verdict !== "CONFIRMED") { console.error("not confirmed, no repro script emitted"); process.exit(1); } console.log(toReproScript(res)); }
     else console.log(JSON.stringify(res, null, 2));
     if (res.determinism && !res.determinism.identical) process.exit(2);
     if (assertScoped) {
@@ -403,7 +404,8 @@ THE ONE PATH (everything else is a helper for one of these):
   2. aperta diff  --base <url> (--surface <json|->|--js <path>) --session <f.json> [--session ...]
                   [--as <name>] [--format jsonl|sarif] [--fail-on any|hidden|bfla]      DIFF
        gating (default 401/403): [--gated-status 302] [--gated-redirect <re>] [--content-marker <re>] [--deny-marker <re>]
-  3. aperta prove --base <url> --attacker <f.json> --victim <f.json> [--id-key id] [--format json|nuclei|sarif]   PROVE
+  3. aperta prove --base <url> --attacker <f.json> [--victim <f.json>] [--format json|nuclei|sarif|repro]   PROVE
+       [--replay N] determinism proof (identical verdict hash)   [--assert-scoped] CI gate (exit 0 iff proven scoped)
        manual:  --object "/api/orders/{param}" --sibling "/api/me/orders" --collection orders
        auto:    --auto (--surface|--js ...)        discover + prove every candidate pair
        graphql: --graphql --object-query <q> --object-path <p> --sibling-query <q> --collection-path <p>

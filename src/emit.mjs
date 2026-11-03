@@ -214,6 +214,47 @@ export function toNucleiTemplate(bola, { exampleId } = {}) {
   return yaml;
 }
 
+// A self-contained reproduction script for a CONFIRMED finding. Unlike the nuclei template (which can
+// only re-check reachability), this replays the actual cross-user CONTRADICTION the way a triager /
+// vendor re-confirms it: victim's own list -> attacker reads the foreign object x3 -> own-id control
+// -> nonexistent-id control. Session auth is a PLACEHOLDER (never embed a real token - evidence
+// hygiene); the operator fills in the two identities and runs it.
+export function toReproScript(bola) {
+  if (bola.verdict !== "CONFIRMED") throw new Error("repro script is only emitted for a CONFIRMED finding");
+  const sh = (s) => String(s).replace(/[\r\n]/g, " ");
+  const ev = bola.evidence || {};
+  const L = [
+    "#!/usr/bin/env bash",
+    `# Aperta reproduction - CONFIRMED ${sh(bola.class || "BOLA")}${bola.subclass ? " (" + sh(bola.subclass) + ")" : ""}`,
+    `# Oracle: ${sh(bola.oracle || "the app's own ownership statement")}`,
+    "# Fill in BASE and the two sessions, then run. Placeholders only: no real token is embedded.",
+    "set -euo pipefail",
+    'BASE="${BASE:-https://TARGET}"',
+    'AUTH_HEADER="Authorization"          # or: Cookie',
+    'ATTACKER_AUTH="PASTE_ATTACKER_SESSION"',
+    'VICTIM_AUTH="PASTE_VICTIM_SESSION"',
+    "",
+  ];
+  const G = (auth, path) => `curl -sS -H "$AUTH_HEADER: $${auth}" "$BASE${sh(path)}"`;
+  const code = (auth, path) => `curl -sS -o /dev/null -w '%{http_code}\\n' -H "$AUTH_HEADER: $${auth}" "$BASE${sh(path)}"`;
+  if (ev.sibling_path && ev.object_template && ev.foreign_id_tested != null) {
+    const objFor = (id) => ev.object_template.replace(/\{param\}/g, encodeURIComponent(String(id)));
+    L.push(`echo "[1] the victim's OWN list attributes object ${sh(ev.foreign_id_tested)} to the victim:"`, G("VICTIM_AUTH", ev.sibling_path), "");
+    L.push(`echo "[2] the attacker reads that object 3x (the break; expect the victim's record each time):"`,
+      `for i in 1 2 3; do ${code("ATTACKER_AUTH", objFor(ev.foreign_id_tested))}; done`, G("ATTACKER_AUTH", objFor(ev.foreign_id_tested)), "");
+    if (ev.control_own_id != null) L.push(`echo "[3] control: the attacker's OWN id is authorized (expect 200):"`, code("ATTACKER_AUTH", objFor(ev.control_own_id)), "");
+    if (ev.control_nonexistent_id != null) L.push(`echo "[4] control: a nonexistent id is not served (expect 404/!=200, rules out a catch-all):"`, code("ATTACKER_AUTH", objFor(ev.control_nonexistent_id)), "");
+  } else if (bola.subclass === "collection-over-return" && ev.sibling_path) {
+    L.push(`echo "[1] the attacker's self-scoped list (the app's statement of what is theirs):"`, G("ATTACKER_AUTH", ev.sibling_path), "");
+    L.push(`echo "[2] the attacker's UNSCOPED list over-returns other users' rows (the leak):"`, G("ATTACKER_AUTH", bola.endpoint), "");
+    L.push(`# foreign rows observed: ${sh(JSON.stringify((ev.foreign_rows || []).slice(0, 5)))}`, "");
+  } else {
+    L.push(`# transport: ${sh(bola.oracle || "")}`, `echo "See the Aperta evidence block; this finding uses a non-REST transport (e.g. GraphQL). Replay the object and sibling queries as the two identities."`, "");
+  }
+  L.push('echo "Reproduced: an attacker-authorized request returned data the app attributes to the victim."');
+  return L.join("\n") + "\n";
+}
+
 // --- self-test --------------------------------------------------------------------------
 function selfTest() {
   const diff = {
@@ -264,6 +305,17 @@ function selfTest() {
   let threw = false;
   try { toNucleiTemplate({ verdict: "NOT-CONFIRMED" }); } catch { threw = true; }
   check(threw, "nuclei refuses a non-confirmed finding");
+
+  // repro script: self-contained, placeholder sessions, all four oracle steps, no embedded token
+  const reproBola = { verdict: "CONFIRMED", class: "BOLA", method: "GET", idKey: "id", endpoint: "/api/orders/{param}", attacker: "alice", victim: "bob", oracle: "sibling /api/me/orders",
+    evidence: { object_template: "/api/orders/{param}", sibling_path: "/api/me/orders", foreign_id_tested: "2001", control_own_id: "1001", control_nonexistent_id: "2001000" } };
+  const repro = toReproScript(reproBola);
+  check(repro.startsWith("#!/usr/bin/env bash"), "repro is a runnable bash script");
+  check(repro.includes("/api/me/orders") && repro.includes("/api/orders/2001"), "repro replays the sibling list and the foreign-object read");
+  check(repro.includes("/api/orders/1001") && repro.includes("/api/orders/2001000"), "repro includes the own-id and nonexistent-id controls");
+  check(repro.includes("PASTE_ATTACKER_SESSION") && repro.includes("PASTE_VICTIM_SESSION") && !/Bearer\s+\w/.test(repro), "repro uses session placeholders, embeds no real token");
+  let threw2 = false; try { toReproScript({ verdict: "NOT-CONFIRMED" }); } catch { threw2 = true; }
+  check(threw2, "repro refuses a non-confirmed finding");
 
   // INJECTION: untrusted id/endpoint/idKey must not break out of their YAML field (flywheel re-runs this).
   const inj = toNucleiTemplate({ verdict: "CONFIRMED", method: "GET", idKey: "id", endpoint: "/api/orders/{param}",

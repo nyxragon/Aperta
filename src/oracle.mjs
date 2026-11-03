@@ -308,6 +308,8 @@ export async function siblingOracleBOLA(base, cfg) {
     gates,
     evidence: {
       ...base_evidence,
+      object_template: cfg.objectTemplate,
+      sibling_path: cfg.siblingPath,
       foreign_id_tested: foreignId,
       reproductions: `${reads}/${repeat}`,
       attacker_get_foreign: attackerGetsForeign,
